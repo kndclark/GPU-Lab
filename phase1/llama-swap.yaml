@@ -8,6 +8,12 @@
 # and legible, instead of vanishing.
 
 healthCheckTimeout: 300   # a 17 GiB MoE takes ~90s to load; 300 leaves slack
+
+# NOTE on --max-model-len for the embedding model: vLLM sizes a KV cache for the
+# model's full max_position_embeddings even under --runner pooling. Qwen3-Embedding
+# declares 32768, which wants 3.5 GiB and fails inside a 0.20 memory budget.
+# Embeddings never consume 32k of input, so capping at 8192 is both correct and
+# what makes it fit (27,008 token pool, 3.3x concurrency).
 logLevel: info
 
 models:
@@ -35,6 +41,7 @@ models:
       --model Qwen/Qwen3-Embedding-0.6B
       --served-model-name qwen3-embed
       --runner pooling
+      --max-model-len 8192
       --gpu-memory-utilization 0.20
     cmdStop: docker stop ${MODEL_ID}
     ttl: 1800
