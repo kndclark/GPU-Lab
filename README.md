@@ -70,6 +70,28 @@ So the gencode is always stated explicitly:
 Verify both directions after any build change. Both images passing on their own
 hardware is *also* consistent with both being mistargeted-but-JIT-capable.
 
+## Repo layout across the two nodes
+
+The laptop is where you work. `git push` reaches **both** GitHub and the desktop:
+
+    origin  git@github.com:kndclark/GPU-Lab.git   (fetch)
+    origin  git@github.com:kndclark/GPU-Lab.git   (push)
+    origin  llm:/home/david/gpu-lab.git           (push)
+
+The desktop's repo is `/home/david/gpu-lab.git` with its work tree at
+`/home/david/gpu-lab`. A `post-receive` hook checks out `main` on every push, so
+the desktop cannot sit on a stale commit. That is deliberate: a stale working copy
+builds the wrong image, and a wrong image yields plausible numbers rather than an
+error.
+
+The desktop has no GitHub credentials and does not need any — it only ever
+receives. `ssh llm` is the direct-link alias (see [phase0/](phase0/)).
+
+To confirm both nodes agree before a measurement run:
+
+    git rev-parse --short HEAD
+    ssh llm 'cd /home/david/gpu-lab && git rev-parse --short HEAD'
+
 ## Status
 
 Phase 0 complete. Next: Phase 1 — vLLM behind llama-swap on the 3090,
