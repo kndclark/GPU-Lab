@@ -34,6 +34,17 @@ services:
     depends_on:
       - prometheus
 
+  litellm:
+    image: litellm/litellm:v1.100.1
+    container_name: litellm
+    network_mode: host
+    restart: unless-stopped
+    env_file:
+      - /etc/gpu-lab/litellm.env      # holds LITELLM_MASTER_KEY; not in git
+    volumes:
+      - /home/david/gpu-lab/phase1/litellm-config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
+
 volumes:
   prometheus-data:
   grafana-data:

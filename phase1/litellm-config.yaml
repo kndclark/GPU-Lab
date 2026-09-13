@@ -1,0 +1,42 @@
+# LiteLLM: the single front door across both nodes.
+#
+# llama-swap manages processes on ONE host, so it can never reach the laptop.
+# This is the layer that makes both nodes answer on one base URL, and it is why
+# adding the laptop's Phase 2 endpoint later is a config block rather than a
+# client change.
+
+model_list:
+  # ---- desktop (sm_86, RTX 3090) via llama-swap on :8080 ----
+  - model_name: qwen3-coder
+    litellm_params:
+      model: openai/qwen3-coder
+      api_base: http://127.0.0.1:8080/v1
+      api_key: none                     # llama-swap does not authenticate
+    model_info:
+      node: desktop
+      arch: sm_86
+
+  - model_name: qwen3-embed
+    litellm_params:
+      model: openai/qwen3-embed
+      api_base: http://127.0.0.1:8080/v1
+      api_key: none
+      mode: embedding
+    model_info:
+      node: desktop
+      arch: sm_120_pending
+
+  # ---- laptop (sm_120, RTX 5090) ----
+  # Add in Phase 2, pointing at the laptop's llama-swap over the direct link:
+  #   api_base: http://10.10.0.2:8080/v1
+  # Nothing on the client side changes when it appears -- that is the whole point
+  # of this layer. See Phase 2b: during a training run the desktop goes down and
+  # a fallback here keeps the same base URL answering from the laptop.
+
+litellm_settings:
+  drop_params: true          # tolerate client params vLLM does not implement
+  request_timeout: 600       # a cold model load through llama-swap takes ~2 min
+  num_retries: 1
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
