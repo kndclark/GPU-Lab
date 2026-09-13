@@ -104,3 +104,42 @@ Editing config:
 Remember both nodes track git: edit on the laptop, `git push`, and the desktop
 checks out automatically. Editing directly on the desktop will be overwritten by
 the next push.
+
+### Rule: every new component goes into `lab`
+
+**When you add a service to the lab, wire it into `phase1/lab` in the same change**
+-- `up`, `down`, and `status`. Never leave starting or stopping it as a step
+someone has to remember.
+
+A control script that covers only some of what is running is worse than no script,
+because it creates false confidence that `lab down` released the machine. That
+matters more than usual here: an orphaned vLLM upstream keeps ~23 GiB pinned, and
+the *next* start then fails with an out-of-memory error that reads like a config
+bug rather than leftover state.
+
+Checklist for a new component:
+
+- `cmd_up` starts it in dependency order -- routers before front doors, so the
+  front door never advertises an upstream that cannot answer.
+- `cmd_down` stops it in reverse -- front doors first, so nothing new arrives
+  while models are being evicted.
+- If it can hold GPU memory, add it to the orphan sweep in `cmd_down`
+  (currently `grep -E '^qwen3-'`), and keep the check that the GPU actually drops
+  below 1 GiB rather than assuming it did.
+- `cmd_status` reports its health; `cmd_logs` can follow it.
+- Decide explicitly whether it should survive a reboot (systemd unit, or
+  `restart: unless-stopped`) and make sure `--boot-off` covers it if not.
+
+### The laptop shares this script
+
+The repo is checked out on both nodes, so the laptop gets a **node-aware `lab`**,
+not a second script -- two files would drift. Add node detection (hostname, or
+`nvidia-smi --query-gpu=compute_cap`) and a `--node desktop|laptop|all` selector.
+
+Two things make the laptop genuinely different, and the script has to respect both:
+
+- **It is not always-on.** It is the interactive machine, so `up` there should not
+  assume boot-time autostart the way the desktop does.
+- **The nodes must stay independently controllable.** Phase 2b runs training on the
+  desktop while the laptop keeps serving through the LiteLLM front door. A script
+  that could only drive both at once would break that failover.
