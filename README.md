@@ -84,8 +84,15 @@ the desktop cannot sit on a stale commit. That is deliberate: a stale working co
 builds the wrong image, and a wrong image yields plausible numbers rather than an
 error.
 
-The desktop has no GitHub credentials and does not need any — it only ever
-receives. `ssh llm` is the direct-link alias (see [phase0/](phase0/)).
+The desktop also has its own key on GitHub and tracks `origin/main`, so it can
+recover on its own if the laptop is unavailable:
+
+    ssh llm 'cd /home/david/gpu-lab && git pull'
+
+That is the fallback, not the normal path. Pushing from the laptop stays primary
+because it is the only route that forces a checkout — a `pull` the desktop never
+runs leaves it silently stale. It also works with the internet down, over the
+direct cable. `ssh llm` is the direct-link alias (see [phase0/](phase0/)).
 
 To confirm both nodes agree before a measurement run:
 
