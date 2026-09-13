@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# Control the serving plane on the desktop node.
+#
+#   lab up      [--warm]     start everything (optionally preload the coder)
+#   lab down    [--boot-off] stop everything (optionally also disable autostart)
+#   lab status               what is running, and is the GPU actually free
+#   lab logs    <svc>        follow logs (llama-swap|litellm|prometheus|grafana|model)
+#
+# Order matters. Coming up: llama-swap before LiteLLM, so the front door never
+# advertises an upstream that cannot answer. Going down: LiteLLM first, so nothing
+# new arrives while models are being evicted.
+set -euo pipefail
+
+COMPOSE_DIR=/home/david/gpu-lab/phase1
+say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+ok()  { printf '  %s\n' "$*"; }
+
+gpu_free_mib() { nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1; }
+
+wait_gpu_clear() {
+    for _ in $(seq 1 30); do
+        [ "$(gpu_free_mib)" -lt 1000 ] && return 0
+        sleep 2
+    done
+    return 1
+}
+
+cmd_up() {
+    say "1/3  llama-swap (model router)"
+    sudo systemctl start llama-swap
+    for _ in $(seq 1 30); do
+        curl -sf localhost:8080/v1/models >/dev/null 2>&1 && break; sleep 1
+    done
+    ok "$(sudo systemctl is-active llama-swap)"
+
+    say "2/3  monitoring + front door"
+    ( cd "$COMPOSE_DIR" && sudo docker compose up -d )
+    for _ in $(seq 1 40); do
+        curl -sf localhost:4000/health/liveliness >/dev/null 2>&1 && break; sleep 2
+    done
+
+    say "3/3  checks"
+    ok "llama-swap models : $(curl -s localhost:8080/v1/models | python3 -c 'import json,sys;print(*[m["id"] for m in json.load(sys.stdin)["data"]])' 2>/dev/null || echo '(not ready)')"
+    ok "prometheus up     : $(curl -s 'localhost:9090/api/v1/query?query=up' >/dev/null 2>&1 && echo yes || echo no)"
+    ok "grafana           : $(curl -s localhost:3000/api/health 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["database"])' 2>/dev/null || echo '(not ready)')"
+    ok "litellm           : $(curl -s localhost:4000/health/liveliness >/dev/null 2>&1 && echo alive || echo '(not ready)')"
+
+    if [ "${1:-}" = "--warm" ]; then
+        say "warming qwen3-coder (~90s cold load)"
+        curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' \
+          -d '{"model":"qwen3-coder","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
+          >/dev/null && ok "loaded, $(gpu_free_mib) MiB in use"
+    fi
+    say "up. front door: http://10.10.0.1:4000/v1"
+}
+
+cmd_down() {
+    say "1/3  LiteLLM (stop accepting new work first)"
+    ( cd "$COMPOSE_DIR" && sudo docker compose stop litellm ) 2>&1 | tail -1
+
+    say "2/3  llama-swap + any loaded model"
+    # llama-swap runs each model's cmdStop on shutdown; give it room to finish.
+    sudo systemctl stop llama-swap || true
+    ok "llama-swap: $(sudo systemctl is-active llama-swap || true)"
+    # Safety net: if llama-swap died uncleanly its upstream can outlive it and keep
+    # the GPU pinned, which silently blocks the next start.
+    for c in $(sudo docker ps --format '{{.Names}}' | grep -E '^qwen3-' || true); do
+        ok "force-stopping orphaned upstream: $c"
+        sudo docker stop "$c" >/dev/null || true
+    done
+
+    say "3/3  monitoring"
+    ( cd "$COMPOSE_DIR" && sudo docker compose stop prometheus grafana ) 2>&1 | tail -1
+
+    if wait_gpu_clear; then
+        ok "GPU released ($(gpu_free_mib) MiB in use)"
+    else
+        printf '  WARNING: GPU still holds %s MiB -- something is still attached\n' "$(gpu_free_mib)"
+        sudo docker ps --format '    still running: {{.Names}}'
+    fi
+
+    if [ "${1:-}" = "--boot-off" ]; then
+        sudo systemctl disable llama-swap >/dev/null 2>&1 || true
+        ok "autostart disabled (compose services already respect a manual stop)"
+    else
+        ok "note: everything returns on reboot. use --boot-off to prevent that."
+    fi
+    say "down."
+}
+
+cmd_status() {
+    say "services"
+    ok "llama-swap : $(sudo systemctl is-active llama-swap 2>/dev/null || echo inactive)"
+    ( cd "$COMPOSE_DIR" && sudo docker compose ps --format '  {{.Name}}: {{.State}}' ) 2>/dev/null || true
+    say "models"
+    sudo docker ps --format '  loaded: {{.Names}} ({{.Status}})' | grep qwen3 || ok "none loaded"
+    say "gpu"
+    nvidia-smi --query-gpu=memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader | sed 's/^/  /'
+    say "endpoints"
+    for u in "llama-swap http://localhost:8080/v1/models" \
+             "prometheus http://localhost:9090/-/healthy" \
+             "grafana    http://localhost:3000/api/health" \
+             "litellm    http://localhost:4000/health/liveliness"; do
+        n=${u%% *}; a=${u##* }
+        if curl -sf "$a" >/dev/null 2>&1; then ok "$n OK"; else ok "$n DOWN"; fi
+    done
+}
+
+cmd_logs() {
+    case "${1:-}" in
+        llama-swap) sudo journalctl -u llama-swap -f ;;
+        model)      sudo docker logs -f "$(sudo docker ps --format '{{.Names}}' | grep -m1 '^qwen3-')" ;;
+        litellm|prometheus|grafana) ( cd "$COMPOSE_DIR" && sudo docker compose logs -f "$1" ) ;;
+        *) echo "usage: lab logs <llama-swap|model|litellm|prometheus|grafana>" >&2; exit 1 ;;
+    esac
+}
+
+case "${1:-}" in
+    up)     shift; cmd_up "${1:-}" ;;
+    down)   shift; cmd_down "${1:-}" ;;
+    status) cmd_status ;;
+    logs)   shift; cmd_logs "${1:-}" ;;
+    *) sed -n '2,10p' "$0" | sed 's/^# \?//'; exit 1 ;;
+esac
