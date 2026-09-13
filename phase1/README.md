@@ -66,7 +66,41 @@ preemptions and aggregate throughput of 305 tok/s.
 
 ## Operating it
 
-    sudo systemctl status llama-swap            # model router
-    cd phase1 && sudo docker compose ps         # prometheus, grafana, litellm
-    sudo docker compose restart litellm         # after editing litellm-config.yaml
-    sudo systemctl restart llama-swap           # after editing llama-swap.yaml
+Use `phase1/lab` on the desktop. From the laptop, prefix with `ssh llm`.
+
+    lab up                 start everything
+    lab up --warm          ...and preload the coder (~90s), so the first real
+                           request is not the one that pays for the cold load
+    lab down               stop everything; services still return on reboot
+    lab down --boot-off    ...and disable autostart
+    lab status             what is running, and whether the GPU is actually free
+    lab logs model         follow the loaded model's log
+    lab logs llama-swap    follow the router (also: litellm|prometheus|grafana)
+
+Order is not arbitrary. Coming up, llama-swap starts before LiteLLM so the front
+door never advertises an upstream that cannot answer. Going down, LiteLLM stops
+first so nothing new arrives while models are being evicted.
+
+`down` verifies the GPU actually drops below 1 GiB rather than assuming it. It
+also force-stops orphaned `qwen3-*` containers: llama-swap normally runs each
+model's `cmdStop` on shutdown, but if it ever dies uncleanly the upstream outlives
+it and keeps the GPU pinned, which silently blocks the next start with an
+out-of-memory failure that looks like a config problem.
+
+**After a reboot everything comes back on its own** -- llama-swap is a systemd
+unit and the compose services use `restart: unless-stopped`. A manual `lab down`
+is respected across a Docker daemon restart, but not across a machine reboot;
+use `--boot-off` for that.
+
+Editing config:
+
+    # after editing llama-swap.yaml
+    sudo systemctl restart llama-swap
+    # after editing litellm-config.yaml
+    cd phase1 && sudo docker compose restart litellm
+    # after editing prometheus.yml
+    cd phase1 && sudo docker compose restart prometheus
+
+Remember both nodes track git: edit on the laptop, `git push`, and the desktop
+checks out automatically. Editing directly on the desktop will be overwritten by
+the next push.
