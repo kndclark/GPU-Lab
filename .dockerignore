@@ -1,0 +1,4 @@
+# Keep the build context to exactly what the Dockerfile needs, so an unrelated
+# file cannot change the context hash and invalidate layer caching between nodes.
+*
+!arch_probe.cu

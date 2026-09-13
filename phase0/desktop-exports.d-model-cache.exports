@@ -1,0 +1,3 @@
+# /etc/exports.d/model-cache.exports on the desktop, then: sudo exportfs -ra
+# Exported to the laptop's direct-link address only; NFS itself listens on 0.0.0.0.
+/srv/model-cache 10.10.0.2/32(rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=1000)

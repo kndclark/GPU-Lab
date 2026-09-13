@@ -1,0 +1,14 @@
+# Desktop direct-link stanza only — merge into /etc/netplan/00-installer-config.yaml.
+# The real file also contains a wifis: block with a cleartext PSK. Do not copy that here.
+# Note: no gateway4 and no nameservers. This link carries node-to-node traffic only.
+network:
+  version: 2
+  ethernets:
+    enp5s0:
+      match:
+        macaddress: 18:c0:4d:69:96:73
+      set-name: enp5s0
+      addresses:
+        - 10.10.0.1/30
+      nameservers:
+        addresses: []
