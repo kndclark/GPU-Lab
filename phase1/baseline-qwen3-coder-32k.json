@@ -1,0 +1,27 @@
+{
+  "label": "PHASE1-BASELINE qwen3-coder 32k",
+  "model": "qwen3-coder",
+  "max_tokens": 200,
+  "concurrency": 1,
+  "repeats": 10,
+  "samples": 50,
+  "ttft_p50": 0.01606529099990439,
+  "ttft_p95": 0.03070060949985418,
+  "ttft_mean": 0.018317802400015352,
+  "rate_p50": 175.8567542469734,
+  "rate_p95": 177.3242814776093,
+  "rate_mean": 175.95679206190246,
+  "gpu_before": {
+    "driver": "595.91.07",
+    "temp_c": 56.0,
+    "power_w": 115.22,
+    "sm_mhz": 1695.0
+  },
+  "gpu_after": {
+    "driver": "595.91.07",
+    "temp_c": 70.0,
+    "power_w": 321.38,
+    "sm_mhz": 1935.0
+  },
+  "temp_max": 70.0
+}
