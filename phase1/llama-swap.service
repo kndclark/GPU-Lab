@@ -1,0 +1,18 @@
+[Unit]
+Description=llama-swap model router (desktop / sm_86 node)
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=david
+Group=david
+# david is in the docker group, so no sudo is needed to launch upstreams.
+ExecStart=/usr/local/bin/llama-swap --config /home/david/gpu-lab/phase1/llama-swap.yaml --listen 0.0.0.0:8080
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
