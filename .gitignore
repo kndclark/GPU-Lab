@@ -1,0 +1,9 @@
+# The runbook is a published Artifact with its own server-side version history.
+# Keeping a copy here creates a second source of truth that will drift.
+# URL is in README.md.
+runbook.html
+
+# Build/bench scratch
+*.bin
+*.o
+*.log
