@@ -1,0 +1,57 @@
+# llama-swap: one OpenAI-compatible front door on the desktop (sm_86 node).
+#
+# Ports are PINNED rather than using ${PORT}. llama-swap would happily assign one
+# per launch, but Prometheus needs a stable target: llama-swap's own /metrics
+# exposes system and GPU stats only and does NOT proxy the upstream engine's
+# metrics, so vLLM's TTFT/ITL/KV-cache series have to be scraped from vLLM
+# directly. A pinned port reads up=0 while a model is unloaded, which is correct
+# and legible, instead of vanishing.
+
+healthCheckTimeout: 300   # a 17 GiB MoE takes ~90s to load; 300 leaves slack
+logLevel: info
+
+models:
+  qwen3-coder:
+    proxy: http://127.0.0.1:8101
+    cmd: |
+      docker run --name ${MODEL_ID} --init --rm --gpus all --ipc=host
+      -v /srv/model-cache:/hf -e HF_HOME=/hf
+      -p 8101:8000
+      vllm/vllm-openai:v0.29.0
+      --model cyankiwi/Qwen3-Coder-30B-A3B-Instruct-AWQ-4bit
+      --served-model-name qwen3-coder
+      --max-model-len 32768
+      --gpu-memory-utilization 0.95
+    cmdStop: docker stop ${MODEL_ID}
+    ttl: 3600
+
+  qwen3-embed:
+    proxy: http://127.0.0.1:8102
+    cmd: |
+      docker run --name ${MODEL_ID} --init --rm --gpus all --ipc=host
+      -v /srv/model-cache:/hf -e HF_HOME=/hf
+      -p 8102:8000
+      vllm/vllm-openai:v0.29.0
+      --model Qwen/Qwen3-Embedding-0.6B
+      --served-model-name qwen3-embed
+      --runner pooling
+      --gpu-memory-utilization 0.20
+    cmdStop: docker stop ${MODEL_ID}
+    ttl: 1800
+
+# Both models claim the whole GPU, so they cannot be resident together: the coder
+# alone occupies 23.2 of 24.5 GiB. llama-swap therefore stops one to start the
+# other, which is exactly what it exists to do -- but it means an embedding call
+# evicts the coder and costs a ~90s reload.
+#
+# If simultaneous coder + embeddings turns out to matter in practice, the fix is
+# NOT to shrink the coder here: dropping it to make room would cut KV from
+# 3.3 GiB to ~1.1 GiB and cap usable context near 12k. Put the embedding model on
+# the laptop instead and let LiteLLM route to it.
+groups:
+  gpu:
+    swap: true
+    exclusive: true
+    members:
+      - qwen3-coder
+      - qwen3-embed
