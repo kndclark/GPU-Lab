@@ -1,0 +1,27 @@
+# Scrapes the vLLM engines directly. llama-swap's own /metrics carries system and
+# GPU stats only -- it does not proxy the upstream -- so the engine series
+# (TTFT, ITL, KV cache, preemptions) must come from vLLM itself.
+#
+# The vLLM targets are only up while their model is loaded. That is expected:
+# a pinned port reads up=0 when swapped out, which is legible, rather than the
+# target disappearing from service discovery.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: vllm
+    static_configs:
+      - targets: ['localhost:8101']
+        labels: {model: qwen3-coder, node: desktop, arch: sm_86}
+      - targets: ['localhost:8102']
+        labels: {model: qwen3-embed, node: desktop, arch: sm_86}
+
+  - job_name: llama-swap
+    static_configs:
+      - targets: ['localhost:8080']
+        labels: {node: desktop, arch: sm_86}
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
