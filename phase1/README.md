@@ -1,0 +1,72 @@
+# Phase 1 — serving plane
+
+The desktop (sm_86, RTX 3090) is the always-on, instrumented node. One base URL
+answers for every model on either machine.
+
+## Endpoints
+
+| Service | Address | Notes |
+|---|---|---|
+| **LiteLLM** (use this) | `http://10.10.0.1:4000/v1` | the single front door; needs the master key |
+| llama-swap | `http://10.10.0.1:8080/v1` | desktop-local model router, no auth |
+| vLLM coder | `127.0.0.1:8101` | pinned so Prometheus has a stable target |
+| vLLM embed | `127.0.0.1:8102` | pinned, same reason |
+| Prometheus | `http://10.10.0.1:9090` | 90d retention |
+| Grafana | `http://10.10.0.1:3000` | admin/admin, dashboard "GPU Lab" |
+
+Master key: `/etc/gpu-lab/litellm.env` on the desktop, mode 0600, not in git.
+
+    sudo grep -oP 'LITELLM_MASTER_KEY=\K.*' /etc/gpu-lab/litellm.env
+
+## Models
+
+| Name | What | Footprint |
+|---|---|---|
+| `qwen3-coder` | Qwen3-Coder-30B-A3B-Instruct AWQ 4-bit, 32k ctx | 23.2 / 24.5 GiB, KV pool 36,032 tokens |
+| `qwen3-embed` | Qwen3-Embedding-0.6B, 1024-dim, 8k ctx | ~5 GiB |
+
+They **cannot be co-resident** — the coder alone takes 23.2 GiB — so llama-swap
+evicts one to start the other, costing a ~90 s reload. Shrinking the coder to fit
+both is the wrong fix: it would cut KV from 3.3 GiB to ~1.1 GiB and cap context
+near 12k. If simultaneous serving matters, put the embedding model on the laptop
+and add it to `litellm-config.yaml`.
+
+## Baseline
+
+Recorded 2026-09-13, 50 samples, `phase1/baseline-qwen3-coder-32k.json`:
+
+    TTFT         p50  0.016 s   p95  0.031 s
+    decode rate  p50  175.9 tok/s   cv 0.5%
+    thermals     40 -> 70 C, 321 W, no throttle
+
+Reproduce with `python3 phase1/bench.py --repeats 10`. **Do not edit the prompt
+set in `bench.py`** without resetting the baseline — comparing across different
+prompts compares nothing.
+
+Two facts worth keeping: decode drifted 177.6 -> 175.9 tok/s as the card went
+58 -> 70 C, which is why single samples are banned here. And "maximum concurrency
+1.10x" in the vLLM log is `36,032 / max_model_len` — an arithmetic restatement
+assuming every request fills the whole window, not a measurement. Real concurrency
+at typical request sizes is far higher: measured 2 concurrent streams with zero
+preemptions and aggregate throughput of 305 tok/s.
+
+## Corrections to the runbook found here
+
+- `vllm:time_per_output_token_seconds` **no longer exists** in v0.29. Use
+  `vllm:inter_token_latency_seconds` (per token) or
+  `vllm:request_time_per_output_token_seconds` (per request).
+- `gpu_cache_usage_perc` -> `kv_cache_usage_perc` was right, but the advice to
+  "scrape both" is now wrong: the old name is fully removed, not deprecated.
+- llama-swap's `/metrics` is **system and GPU stats only**; it does not proxy the
+  upstream. vLLM engine metrics must be scraped from vLLM directly, which is why
+  the ports here are pinned rather than using `${PORT}`.
+- vLLM sizes a KV cache from `max_position_embeddings` even under
+  `--runner pooling`, so an embedding model needs an explicit `--max-model-len`
+  or it tries to reserve 3.5 GiB and dies.
+
+## Operating it
+
+    sudo systemctl status llama-swap            # model router
+    cd phase1 && sudo docker compose ps         # prometheus, grafana, litellm
+    sudo docker compose restart litellm         # after editing litellm-config.yaml
+    sudo systemctl restart llama-swap           # after editing llama-swap.yaml
