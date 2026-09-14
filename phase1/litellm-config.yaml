@@ -16,7 +16,10 @@ model_list:
       node: desktop
       arch: sm_86
 
-  - model_name: qwen3-embed
+  # Kept as the fallback target only. The laptop is not always-on, and when it
+  # sleeps this is what answers -- at the cost of evicting the coder for ~90 s,
+  # which is exactly the trade the primary below exists to avoid.
+  - model_name: qwen3-embed-desktop
     litellm_params:
       model: openai/qwen3-embed
       api_base: http://127.0.0.1:8080/v1
@@ -24,19 +27,32 @@ model_list:
       mode: embedding
     model_info:
       node: desktop
-      arch: sm_120_pending
+      arch: sm_86
 
-  # ---- laptop (sm_120, RTX 5090) ----
-  # Add in Phase 2, pointing at the laptop's llama-swap over the direct link:
-  #   api_base: http://10.10.0.2:8080/v1
-  # Nothing on the client side changes when it appears -- that is the whole point
-  # of this layer. See Phase 2b: during a training run the desktop goes down and
-  # a fallback here keeps the same base URL answering from the laptop.
+  # ---- laptop (sm_120, RTX 5090) via llama-swap on :8080 over the direct link ----
+  # Phase 2. Serving embeddings from the second card is what ends the coder/embed
+  # eviction on the desktop: the two models no longer share a GPU. Clients keep
+  # asking for "qwen3-embed" on the same base URL and never learn it moved.
+  - model_name: qwen3-embed
+    litellm_params:
+      model: openai/qwen3-embed
+      api_base: http://10.10.0.2:8080/v1
+      api_key: none
+      mode: embedding
+    model_info:
+      node: laptop
+      arch: sm_120
 
 litellm_settings:
   drop_params: true          # tolerate client params vLLM does not implement
   request_timeout: 600       # a cold model load through llama-swap takes ~2 min
   num_retries: 1
+  # The laptop is not always-on: a lid-close takes the sm_120 endpoint away and
+  # its NIC does not survive suspend. Without this, embeddings would simply fail
+  # whenever the laptop is asleep -- a regression against Phase 1, which served
+  # them from the always-on node.
+  fallbacks:
+    - qwen3-embed: ["qwen3-embed-desktop"]
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

@@ -1,0 +1,42 @@
+# llama-swap on the laptop (sm_120 node).
+#
+# This node has no front door of its own: the desktop's LiteLLM routes to it over
+# the direct link at http://10.10.0.2:8080/v1. That is the integration point
+# phase1/litellm-config.yaml was built to accept.
+#
+# Why the embedding model lives here rather than on the desktop: the coder alone
+# takes 23.2 of the 3090's 24.5 GiB, so the two models cannot be co-resident and
+# llama-swap has to evict one to serve the other at a ~90 s cost. Shrinking the
+# coder is the wrong fix -- it would cut KV from 3.3 GiB to ~1.1 GiB and cap
+# context near 12k. Moving embeddings to the second card is the right one.
+#
+# Ports are PINNED for the same reason as on the desktop: Prometheus needs a
+# stable target, and llama-swap's own /metrics does not proxy the upstream
+# engine's series.
+
+healthCheckTimeout: 300
+
+models:
+  qwen3-embed:
+    proxy: http://127.0.0.1:8102
+    # --gpu-memory-utilization is a fraction of TOTAL board memory, and this board
+    # drives a display: the desktop session holds ~1.25 GiB before vLLM starts.
+    # The desktop's 0.20 would leave only ~2.3 GiB for KV here. 0.30 was measured
+    # on this node: 5.05 GiB KV cache, 47,264 tokens, 5.77x concurrency at 8k,
+    # 8.4 GiB of the board in use -- which still leaves ~16 GiB free for the
+    # Phase 2 experiments this laptop exists to run.
+    cmd: |
+      docker run --name ${MODEL_ID} --init --rm --gpus all --ipc=host
+      -v /srv/model-cache:/hf -e HF_HOME=/hf
+      -p 8102:8000
+      vllm/vllm-openai:v0.29.0
+      --model Qwen/Qwen3-Embedding-0.6B
+      --served-model-name qwen3-embed
+      --runner pooling
+      --max-model-len 8192
+      --gpu-memory-utilization 0.30
+    cmdStop: docker stop ${MODEL_ID}
+    ttl: 1800
+
+# No swap group: this node serves one model today, and the whole point of putting
+# it here is that it does NOT contend with the coder on the other card.

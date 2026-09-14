@@ -14,13 +14,25 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:8101']
         labels: {model: qwen3-coder, node: desktop, arch: sm_86}
+      # Still pinned, but now the fallback path: it only carries series while the
+      # laptop is asleep and LiteLLM has fallen back to the desktop.
       - targets: ['localhost:8102']
         labels: {model: qwen3-embed, node: desktop, arch: sm_86}
+      # Phase 2: the laptop, reached over the direct link. Prometheus runs with
+      # network_mode: host, so 10.10.0.x is directly routable from here.
+      # The arch label is what makes an sm_86/sm_120 comparison a query rather
+      # than a spreadsheet.
+      - targets: ['10.10.0.2:8102']
+        labels: {model: qwen3-embed, node: laptop, arch: sm_120}
 
   - job_name: llama-swap
     static_configs:
       - targets: ['localhost:8080']
         labels: {node: desktop, arch: sm_86}
+      # Down whenever the laptop is off, which is normal for that node and not
+      # an alertable condition.
+      - targets: ['10.10.0.2:8080']
+        labels: {node: laptop, arch: sm_120}
 
   - job_name: prometheus
     static_configs:

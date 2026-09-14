@@ -1,64 +1,195 @@
 #!/usr/bin/env bash
-# Control the serving plane on the desktop node.
+#== usage ==
+# Control the serving plane. The same script runs on both nodes and does the
+# right thing for whichever one it is on.
 #
-#   lab up      [--warm]     start everything (optionally preload the coder)
+#   lab up      [--warm]     start everything (optionally preload this node's model)
 #   lab down    [--boot-off] stop everything (optionally also disable autostart)
 #   lab status               what is running, and is the GPU actually free
+#   lab reload  [svc]        apply edited config files (they are read-only mounts)
 #   lab logs    <svc>        follow logs (llama-swap|litellm|prometheus|grafana|model)
+#== end usage ==
+#
+# Node roles differ, so the script's work differs:
+#
+#   desktop (sm_86)  always-on server. llama-swap + LiteLLM + Prometheus + Grafana.
+#   laptop  (sm_120) not always-on. llama-swap only -- the desktop's LiteLLM routes
+#                    to it over the direct link, so it serves without a front door
+#                    of its own and has no monitoring stack to start.
+#
+# The two nodes stay independently controllable on purpose: Phase 2b trains on the
+# desktop while the laptop keeps answering on the same base URL.
 #
 # Order matters. Coming up: llama-swap before LiteLLM, so the front door never
 # advertises an upstream that cannot answer. Going down: LiteLLM first, so nothing
 # new arrives while models are being evicted.
 set -euo pipefail
 
-COMPOSE_DIR=/home/david/gpu-lab/phase1
+REPO=/home/david/gpu-lab
+
+# ---- which node is this? ----
+# Compute capability is the primary signal, not hostname: it is the axis the whole
+# lab is built on, it cannot drift, and it still answers when the direct link is
+# down (which on the laptop is a routine post-suspend state, not an anomaly).
+detect_node() {
+    [ -n "${GPU_LAB_NODE:-}" ] && { echo "$GPU_LAB_NODE"; return; }
+    case "$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' ')" in
+        8.6)  echo desktop ;;
+        12.0) echo laptop  ;;
+        *) case "$(hostname)" in
+               davids-llm-server)           echo desktop ;;
+               david-Legion-Pro-7-16IAX10H) echo laptop  ;;
+               *) echo unknown ;;
+           esac ;;
+    esac
+}
+# Usage is answered before the node gate: on a third machine "lab" used to print
+# its own help, and a node-detection failure should not take that away.
+case "${1:-}" in
+    up|down|status|reload|logs) ;;
+    *) awk '/^#== usage ==/{f=1;next} /^#== end usage ==/{f=0} f' "$0" | sed 's/^# \?//'; exit 1 ;;
+esac
+
+NODE=$(detect_node)
+
+case "$NODE" in
+    desktop)
+        SWAP_CONFIG=$REPO/phase1/llama-swap.yaml
+        COMPOSE_DIR=$REPO/phase1     # LiteLLM + Prometheus + Grafana live here only
+        HAS_COMPOSE=1
+        WARM_MODEL=qwen3-coder
+        WARM_KIND=chat
+        # Headless: anything above a trickle means something is still attached.
+        GPU_IDLE_MIB=1000
+        FRONT_DOOR="http://10.10.0.1:4000/v1"
+        ;;
+    laptop)
+        SWAP_CONFIG=$REPO/phase2/llama-swap-laptop.yaml
+        COMPOSE_DIR=
+        HAS_COMPOSE=0
+        WARM_MODEL=qwen3-embed
+        # A pooling model does not serve /v1/chat/completions -- warming it through
+        # the chat route would 400 and look like a dead endpoint.
+        WARM_KIND=embed
+        # The laptop drives a display: the desktop session alone holds ~1.3 GiB at
+        # idle, so the desktop's 1000 MiB floor would never be reached here and
+        # "lab down" would report a permanent false failure.
+        # Blind spot: this floor cannot see a process holding less than
+        # ~1.7 GiB above the display. Fine for a model (8.4 GiB), not a
+        # guarantee that a small training job has exited.
+        GPU_IDLE_MIB=3000
+        FRONT_DOOR="http://10.10.0.2:8080/v1  (via the desktop's LiteLLM at http://10.10.0.1:4000/v1)"
+        ;;
+    *)
+        echo "cannot identify this node (no sm_86/sm_120 GPU, unrecognised hostname)." >&2
+        echo "set GPU_LAB_NODE=desktop|laptop to override." >&2
+        exit 1
+        ;;
+esac
+
 say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 ok()  { printf '  %s\n' "$*"; }
 
-gpu_free_mib() { nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1; }
+gpu_used_mib() { nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1; }
 
 wait_gpu_clear() {
     for _ in $(seq 1 30); do
-        [ "$(gpu_free_mib)" -lt 1000 ] && return 0
+        [ "$(gpu_used_mib)" -lt "$GPU_IDLE_MIB" ] && return 0
         sleep 2
     done
     return 1
 }
 
+peer_addr() { case "$NODE" in desktop) echo 10.10.0.2 ;; laptop) echo 10.10.0.1 ;; esac; }
+
 cmd_up() {
-    say "1/3  llama-swap (model router)"
+    local n=1 total=$(( HAS_COMPOSE ? 3 : 2 ))
+
+    # Preflight, and it must come first. This node's weights arrive over the
+    # direct link (/srv/model-cache is NFS from the desktop) and the unit carries
+    # RequiresMountsFor, so a wedged I226 makes "systemctl start" fail with an
+    # opaque mount error -- and set -e would kill this script before reaching the
+    # repair hint written for exactly this case.
+    if [ "$HAS_COMPOSE" = 0 ] && ! ping -c1 -W2 "$(peer_addr)" >/dev/null 2>&1; then
+        echo "  direct link to $(peer_addr) is DOWN." >&2
+        echo "  /srv/model-cache is NFS over that link and the unit requires it," >&2
+        echo "  so llama-swap cannot start. Repair, then retry:" >&2
+        echo "    sudo /usr/local/sbin/gpu-lab-igc-resume-repair" >&2
+        exit 1
+    fi
+
+    say "$((n++))/$total  llama-swap (model router)"
+    if [ ! -f "$SWAP_CONFIG" ]; then
+        echo "  missing model config: $SWAP_CONFIG" >&2
+        echo "  llama-swap cannot start without it." >&2
+        exit 1
+    fi
     sudo systemctl start llama-swap
     for _ in $(seq 1 30); do
         curl -sf localhost:8080/v1/models >/dev/null 2>&1 && break; sleep 1
     done
     ok "$(sudo systemctl is-active llama-swap)"
 
-    say "2/3  monitoring + front door"
-    ( cd "$COMPOSE_DIR" && sudo docker compose up -d )
-    for _ in $(seq 1 40); do
-        curl -sf localhost:4000/health/liveliness >/dev/null 2>&1 && break; sleep 2
-    done
+    if [ "$HAS_COMPOSE" = 1 ]; then
+        say "$((n++))/$total  monitoring + front door"
+        ( cd "$COMPOSE_DIR" && sudo docker compose up -d )
+        for _ in $(seq 1 40); do
+            curl -sf localhost:4000/health/liveliness >/dev/null 2>&1 && break; sleep 2
+        done
+    fi
 
-    say "3/3  checks"
+    say "$((n++))/$total  checks"
     ok "llama-swap models : $(curl -s localhost:8080/v1/models | python3 -c 'import json,sys;print(*[m["id"] for m in json.load(sys.stdin)["data"]])' 2>/dev/null || echo '(not ready)')"
-    ok "prometheus up     : $(curl -s 'localhost:9090/api/v1/query?query=up' >/dev/null 2>&1 && echo yes || echo no)"
-    ok "grafana           : $(curl -s localhost:3000/api/health 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["database"])' 2>/dev/null || echo '(not ready)')"
-    ok "litellm           : $(curl -s localhost:4000/health/liveliness >/dev/null 2>&1 && echo alive || echo '(not ready)')"
+    if [ "$HAS_COMPOSE" = 1 ]; then
+        ok "prometheus up     : $(curl -s 'localhost:9090/api/v1/query?query=up' >/dev/null 2>&1 && echo yes || echo no)"
+        ok "grafana           : $(curl -s localhost:3000/api/health 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["database"])' 2>/dev/null || echo '(not ready)')"
+        ok "litellm           : $(curl -s localhost:4000/health/liveliness >/dev/null 2>&1 && echo alive || echo '(not ready)')"
+    fi
+
+    # Both nodes. The desktop especially: LiteLLM publishes qwen3-embed with an
+    # api_base of 10.10.0.2, so an all-green front door here can still be
+    # advertising an upstream that nothing can reach.
+    if ping -c1 -W2 "$(peer_addr)" >/dev/null 2>&1; then
+        ok "peer $(peer_addr)     : OK"
+    elif [ "$HAS_COMPOSE" = 1 ]; then
+        ok "peer $(peer_addr)     : UNREACHABLE -- qwen3-embed falls back to this node (~90 s load)"
+    else
+        ok "peer $(peer_addr)     : UNREACHABLE -- this node is serving to nobody."
+        ok "                      sudo /usr/local/sbin/gpu-lab-igc-resume-repair"
+    fi
 
     if [ "${1:-}" = "--warm" ]; then
-        say "warming qwen3-coder (~90s cold load)"
-        curl -s localhost:8080/v1/chat/completions -H 'Content-Type: application/json' \
-          -d '{"model":"qwen3-coder","messages":[{"role":"user","content":"hi"}],"max_tokens":1}' \
-          >/dev/null && ok "loaded, $(gpu_free_mib) MiB in use"
+        say "warming $WARM_MODEL (cold load)"
+        case "$WARM_KIND" in
+            chat)  route=/v1/chat/completions
+                   body="{\"model\":\"$WARM_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}" ;;
+            embed) route=/v1/embeddings
+                   body="{\"model\":\"$WARM_MODEL\",\"input\":\"warm\"}" ;;
+            *)     route=""; body="" ;;
+        esac
+        if [ -z "$route" ]; then
+            ok "WARNING: no warm route defined for kind '$WARM_KIND' -- skipped"
+        elif curl -sf "localhost:8080$route" -H 'Content-Type: application/json' -d "$body" >/dev/null; then
+            ok "loaded, $(gpu_used_mib) MiB in use"
+        else
+            ok "WARNING: warm request to $route failed -- model did not load"
+        fi
     fi
-    say "up. front door: http://10.10.0.1:4000/v1"
+    say "up ($NODE). front door: $FRONT_DOOR"
 }
 
 cmd_down() {
-    say "1/3  LiteLLM (stop accepting new work first)"
-    ( cd "$COMPOSE_DIR" && sudo docker compose stop litellm ) 2>&1 | tail -1
+    # Not the same arithmetic as cmd_up: here the compose guard wraps two numbered
+    # steps (LiteLLM first, monitoring last), so without compose there is exactly one.
+    local n=1 total=1
+    [ "$HAS_COMPOSE" = 1 ] && total=3
 
-    say "2/3  llama-swap + any loaded model"
+    if [ "$HAS_COMPOSE" = 1 ]; then
+        say "$((n++))/$total  LiteLLM (stop accepting new work first)"
+        ( cd "$COMPOSE_DIR" && sudo docker compose stop litellm ) 2>&1 | tail -1
+    fi
+
+    say "$((n++))/$total  llama-swap + any loaded model"
     # llama-swap runs each model's cmdStop on shutdown; give it room to finish.
     sudo systemctl stop llama-swap || true
     ok "llama-swap: $(sudo systemctl is-active llama-swap || true)"
@@ -69,33 +200,56 @@ cmd_down() {
         sudo docker stop "$c" >/dev/null || true
     done
 
-    say "3/3  monitoring"
-    ( cd "$COMPOSE_DIR" && sudo docker compose stop prometheus grafana ) 2>&1 | tail -1
+    if [ "$HAS_COMPOSE" = 1 ]; then
+        say "$((n++))/$total  monitoring"
+        ( cd "$COMPOSE_DIR" && sudo docker compose stop prometheus grafana ) 2>&1 | tail -1
+    fi
 
     if wait_gpu_clear; then
-        ok "GPU released ($(gpu_free_mib) MiB in use)"
+        ok "GPU released ($(gpu_used_mib) MiB in use, idle floor $GPU_IDLE_MIB)"
     else
-        printf '  WARNING: GPU still holds %s MiB -- something is still attached\n' "$(gpu_free_mib)"
-        sudo docker ps --format '    still running: {{.Names}}'
+        printf '  WARNING: GPU still holds %s MiB -- something is still attached\n' "$(gpu_used_mib)"
+        sudo docker ps --format '    still running: {{.Names}}' || true
     fi
 
     if [ "${1:-}" = "--boot-off" ]; then
         sudo systemctl disable llama-swap >/dev/null 2>&1 || true
-        ok "autostart disabled (compose services already respect a manual stop)"
+        if [ "$HAS_COMPOSE" = 1 ]; then
+            ok "autostart disabled (compose services already respect a manual stop)"
+        else
+            ok "autostart disabled"
+        fi
     else
         ok "note: everything returns on reboot. use --boot-off to prevent that."
     fi
-    say "down."
+    say "down ($NODE)."
 }
 
 cmd_status() {
+    say "node"
+    ok "$NODE  ($(hostname), $(nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader 2>/dev/null || echo 'no GPU'))"
+
     say "services"
-    ok "llama-swap : $(sudo systemctl is-active llama-swap 2>/dev/null || echo inactive)"
-    ( cd "$COMPOSE_DIR" && sudo docker compose ps --format '  {{.Name}}: {{.State}}' ) 2>/dev/null || true
+    if sudo systemctl cat llama-swap >/dev/null 2>&1; then
+        sv=$(sudo systemctl is-active llama-swap 2>/dev/null || true)
+    else
+        # is-active alone cannot tell these apart: it prints "inactive" and exits 3
+        # for a unit that was never installed.
+        sv="not installed"
+    fi
+    ok "llama-swap : ${sv:-unknown}"
+    if [ "$HAS_COMPOSE" = 1 ]; then
+        ( cd "$COMPOSE_DIR" && sudo docker compose ps --format '  {{.Name}}: {{.State}}' ) 2>/dev/null || true
+    else
+        ok "(no compose stack on this node -- LiteLLM/Prometheus/Grafana run on the desktop)"
+    fi
+
     say "models"
     sudo docker ps --format '  loaded: {{.Names}} ({{.Status}})' | grep qwen3 || ok "none loaded"
+
     say "gpu"
     nvidia-smi --query-gpu=memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader | sed 's/^/  /'
+
     say "direct link"
     # Node-agnostic: find whichever end of the /30 this machine owns. A dead
     # link here is the single most common reason the lab looks unreachable from
@@ -115,20 +269,78 @@ cmd_status() {
     fi
 
     say "endpoints"
-    for u in "llama-swap http://localhost:8080/v1/models" \
-             "prometheus http://localhost:9090/-/healthy" \
-             "grafana    http://localhost:3000/api/health" \
-             "litellm    http://localhost:4000/health/liveliness"; do
-        n=${u%% *}; a=${u##* }
-        if curl -sf "$a" >/dev/null 2>&1; then ok "$n OK"; else ok "$n DOWN"; fi
-    done
+    endpoints="llama-swap http://localhost:8080/v1/models"
+    if [ "$HAS_COMPOSE" = 1 ]; then
+        endpoints="$endpoints
+prometheus http://localhost:9090/-/healthy
+grafana    http://localhost:3000/api/health
+litellm    http://localhost:4000/health/liveliness"
+    fi
+    while IFS= read -r u; do
+        [ -z "$u" ] && continue
+        name=${u%% *}; addr=${u##* }
+        if curl -sf "$addr" >/dev/null 2>&1; then ok "$name OK"; else ok "$name DOWN"; fi
+    done <<< "$endpoints"
+}
+
+# Config files reach these services as read-only bind mounts, so editing one on
+# disk changes nothing in the running container. Prometheus cannot be told to
+# re-read either: it runs without --web.enable-lifecycle, so POST /-/reload is
+# 403. A restart is the only way to apply an edit, and "docker compose up -d"
+# will not do it -- the container spec is unchanged, so compose sees no drift.
+cmd_reload() {
+    local want="$*" compose_svcs="" restart_swap=0 svc
+    if [ -z "$want" ]; then
+        if [ "$HAS_COMPOSE" = 1 ]; then
+            # llama-swap is deliberately NOT in the default set: restarting it
+            # evicts whatever model is loaded and costs a ~90 s reload. Ask for it.
+            compose_svcs="prometheus grafana litellm"
+        else
+            # It is the only config consumer on this node, so there is nothing
+            # else a bare reload could mean -- but it still costs an eviction.
+            restart_swap=1
+        fi
+    else
+        for svc in $want; do
+            case "$svc" in
+                llama-swap) restart_swap=1 ;;
+                prometheus|grafana|litellm)
+                    if [ "$HAS_COMPOSE" = 1 ]; then
+                        compose_svcs="$compose_svcs $svc"
+                    else
+                        echo "$svc runs on the desktop, not here: ssh llm '$REPO/phase1/lab reload $svc'" >&2
+                        exit 1
+                    fi ;;
+                *) echo "unknown service: $svc" >&2
+                   echo "usage: lab reload [llama-swap|prometheus|grafana|litellm]" >&2
+                   exit 1 ;;
+            esac
+        done
+    fi
+
+    if [ "$restart_swap" = 1 ]; then
+        say "restarting llama-swap (this evicts any loaded model)"
+        sudo systemctl restart llama-swap
+        ok "llama-swap: $(sudo systemctl is-active llama-swap || true)"
+    fi
+    if [ -n "$compose_svcs" ]; then
+        say "restarting:$compose_svcs"
+        # shellcheck disable=SC2086  -- deliberate word splitting into compose
+        ( cd "$COMPOSE_DIR" && sudo docker compose restart $compose_svcs ) 2>&1 | tail -3
+    fi
+    say "reloaded ($NODE)."
 }
 
 cmd_logs() {
     case "${1:-}" in
         llama-swap) sudo journalctl -u llama-swap -f ;;
         model)      sudo docker logs -f "$(sudo docker ps --format '{{.Names}}' | grep -m1 '^qwen3-')" ;;
-        litellm|prometheus|grafana) ( cd "$COMPOSE_DIR" && sudo docker compose logs -f "$1" ) ;;
+        litellm|prometheus|grafana)
+            if [ "$HAS_COMPOSE" = 1 ]; then
+                ( cd "$COMPOSE_DIR" && sudo docker compose logs -f "$1" )
+            else
+                echo "$1 runs on the desktop, not here: ssh llm '$REPO/phase1/lab logs $1'" >&2; exit 1
+            fi ;;
         *) echo "usage: lab logs <llama-swap|model|litellm|prometheus|grafana>" >&2; exit 1 ;;
     esac
 }
@@ -138,5 +350,6 @@ case "${1:-}" in
     down)   shift; cmd_down "${1:-}" ;;
     status) cmd_status ;;
     logs)   shift; cmd_logs "${1:-}" ;;
-    *) sed -n '2,10p' "$0" | sed 's/^# \?//'; exit 1 ;;
+    reload) shift; cmd_reload "$*" ;;
+    *) awk '/^#== usage ==/{f=1;next} /^#== end usage ==/{f=0} f' "$0" | sed 's/^# \?//'; exit 1 ;;
 esac
