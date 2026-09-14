@@ -359,8 +359,18 @@ cmd_reload() {
         ok "llama-swap: $(sudo systemctl is-active llama-swap || true)"
     fi
     if [ -n "$compose_svcs" ]; then
-        say "restarting:$compose_svcs"
+        say "applying:$compose_svcs"
+        # Both are needed, and neither alone is enough:
+        #   up -d    recreates a container whose SPEC changed (a moved bind-mount
+        #            path, a new env var) -- but does nothing when only the
+        #            contents of a mounted file changed.
+        #   restart  re-reads a mounted file's CONTENTS -- but keeps the old spec,
+        #            so a moved path would be silently ignored.
+        # A repo restructure changes the spec; an edited prometheus.yml changes
+        # only contents. This command has to cover both.
         # shellcheck disable=SC2086  -- deliberate word splitting into compose
+        ( cd "$COMPOSE_DIR" && sudo docker compose up -d $compose_svcs ) 2>&1 | tail -3
+        # shellcheck disable=SC2086
         ( cd "$COMPOSE_DIR" && sudo docker compose restart $compose_svcs ) 2>&1 | tail -3
     fi
     say "reloaded ($NODE)."
