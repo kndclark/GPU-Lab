@@ -28,6 +28,51 @@ A private /30 with no gateway. Two rules matter:
 
 Addresses: desktop `10.10.0.1/30` (`enp5s0`), laptop `10.10.0.2/30` (`enp129s0`).
 
+## The laptop's NIC does not survive suspend
+
+The laptop's Intel I226-V (`igc`, PCI `0000:81:00.0`) is detached by the kernel
+on the way into deep suspend and its resume path fails
+(`Timeout reading IGC_PTM_STAT register`). What is left is a netdev that still
+appears in `ip link show` but rejects every operation:
+
+    $ sudo ip link set enp129s0 up
+    RTNETLINK answers: No such device
+
+**This reads as a desktop failure and is not one.** With the laptop's PHY
+powered down the desktop sees no carrier either, so systemd-networkd never
+applies `10.10.0.1` — `ip -br addr` there shows `enp5s0 DOWN` with no address at
+all. That missing address is a *symptom*, not lost configuration; networkd does
+not address a link with no carrier. Check `/etc/netplan/` before re-applying
+anything, and reach the desktop over `ssh llm-wifi` meanwhile.
+
+Rebinding the PCI driver re-probes the device; NetworkManager then reapplies
+`10.10.0.2/30` on its own. That is automated by `gpu-lab-igc-resume.service`,
+installed from the two files here:
+
+| Repo file | Installed as |
+|---|---|
+| `laptop-igc-resume-repair.sh` | `/usr/local/sbin/gpu-lab-igc-resume-repair` (0755 root) |
+| `laptop-igc-resume.service` | `/etc/systemd/system/gpu-lab-igc-resume.service`, `systemctl enable` |
+
+Three choices in it are deliberate:
+
+- **A unit ordered `Before=sleep.target` with the work in `ExecStop=`**, not a
+  script in `/usr/lib/systemd/system-sleep/`. Sleep-directory scripts run with
+  `user.slice` frozen and *block* the resume until they return, and this one
+  waits up to ten seconds to see whether the NIC recovers unaided.
+- **`WantedBy=sleep.target`** rather than naming `suspend.target` — `sleep.target`
+  is pulled in by all four sleep types, so one unit covers suspend, hibernate,
+  hybrid-sleep and suspend-then-hibernate.
+- **It repairs only when the NIC is actually wedged.** The probe is whether
+  `ethtool` can talk to the device, which stays true with the cable unplugged,
+  so it tests the device rather than the link. A healthy resume logs one line
+  and exits.
+
+No carrier after a successful rebind is reported, not treated as an error — that
+is the legitimate "desktop is off" case. Run it by hand any time:
+`sudo /usr/local/sbin/gpu-lab-igc-resume-repair`. `phase1/lab status` reports the
+link on either node.
+
 ## The shared model cache
 
 `/srv/model-cache`, exported from the desktop over NFSv4.2. This is a

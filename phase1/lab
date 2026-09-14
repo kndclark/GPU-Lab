@@ -96,6 +96,24 @@ cmd_status() {
     sudo docker ps --format '  loaded: {{.Names}} ({{.Status}})' | grep qwen3 || ok "none loaded"
     say "gpu"
     nvidia-smi --query-gpu=memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader | sed 's/^/  /'
+    say "direct link"
+    # Node-agnostic: find whichever end of the /30 this machine owns. A dead
+    # link here is the single most common reason the lab looks unreachable from
+    # an otherwise healthy server -- see phase0/laptop-igc-resume-repair.sh.
+    dev=$(ip -o route show 10.10.0.0/30 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)
+    if [ -z "$dev" ]; then
+        ok "DOWN -- no 10.10.0.0/30 route (laptop: sudo /usr/local/sbin/gpu-lab-igc-resume-repair)"
+    else
+        me=$(ip -4 -o addr show "$dev" 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+        case "$me" in 10.10.0.1) peer=10.10.0.2 ;; 10.10.0.2) peer=10.10.0.1 ;; *) peer= ;; esac
+        ok "$dev $me $(ethtool "$dev" 2>/dev/null | awk -F': ' '/Speed:/{print $2}')"
+        if [ -n "$peer" ] && ping -c1 -W2 "$peer" >/dev/null 2>&1; then
+            ok "peer $peer OK ($(ping -c3 -W2 -q "$peer" 2>/dev/null | awk -F/ '/rtt/{print $5" ms avg"}'))"
+        else
+            ok "peer ${peer:-unknown} UNREACHABLE"
+        fi
+    fi
+
     say "endpoints"
     for u in "llama-swap http://localhost:8080/v1/models" \
              "prometheus http://localhost:9090/-/healthy" \
