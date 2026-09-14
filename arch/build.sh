@@ -3,6 +3,10 @@
 # Usage: ./build.sh [sm86|sm120]   (auto-detects if omitted)
 set -euo pipefail
 
+# Resolve our own directory: the Dockerfile, arch_probe.cu and .dockerignore all
+# live beside this script, so the build context is here rather than the cwd.
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
 target="${1:-auto}"
 if [[ "$target" == "auto" ]]; then
     cap=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d ' .')
@@ -38,4 +42,5 @@ echo "  gencode              = $GENCODE"
 exec sudo docker build \
     --build-arg "TORCH_CUDA_ARCH_LIST=$ARCH_LIST" \
     --build-arg "NVCC_GENCODE=$GENCODE" \
-    -t "gpu-lab:$target" .
+    -f "$here/Dockerfile" \
+    -t "gpu-lab:$target" "$here"

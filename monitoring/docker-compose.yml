@@ -1,5 +1,14 @@
 # Monitoring for the serving plane. Both services use host networking so they can
 # reach the vLLM engines on pinned localhost ports without a bridge hop.
+# PINNED, and it must stay pinned. Compose takes the project name from the
+# directory holding this file, and the project name is what prefixes the data
+# volumes. Moving this file out of phase1/ without this line would have started a
+# NEW project against EMPTY volumes -- orphaning 90 days of Prometheus history and
+# the Grafana database (dashboards, users, the admin password) while appearing to
+# work. The name is historical; the volumes below are pinned by name too, so
+# renaming the project later costs a "compose down" + "up" and no data.
+name: phase1
+
 services:
   prometheus:
     image: prom/prometheus:v3.14.0
@@ -7,7 +16,7 @@ services:
     network_mode: host
     restart: unless-stopped
     volumes:
-      - /home/david/gpu-lab/phase1/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - /home/david/gpu-lab/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
@@ -29,8 +38,8 @@ services:
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
     volumes:
       - grafana-data:/var/lib/grafana
-      - /home/david/gpu-lab/phase1/grafana/provisioning:/etc/grafana/provisioning:ro
-      - /home/david/gpu-lab/phase1/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - /home/david/gpu-lab/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - /home/david/gpu-lab/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
 
@@ -42,9 +51,13 @@ services:
     env_file:
       - /etc/gpu-lab/litellm.env      # holds LITELLM_MASTER_KEY; not in git
     volumes:
-      - /home/david/gpu-lab/phase1/litellm-config.yaml:/app/config.yaml:ro
+      - /home/david/gpu-lab/serving/litellm-config.yaml:/app/config.yaml:ro
     command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "0.0.0.0"]
 
 volumes:
+  # Explicit names: these volumes already exist and hold the history. Pinning them
+  # here is what makes the project name above merely cosmetic.
   prometheus-data:
+    name: phase1_prometheus-data
   grafana-data:
+    name: phase1_grafana-data

@@ -40,20 +40,20 @@ def load(path):
 
 
 # ---- 1. the control script must at least be syntactically runnable ----
-lab = os.path.join(REPO, "phase1", "lab")
+lab = os.path.join(REPO, "bin", "lab")
 if os.path.exists(lab):
     r = subprocess.run(["bash", "-n", lab], capture_output=True, text=True)
     if r.returncode:
-        fails.append(f"phase1/lab: bash syntax error: {r.stderr.strip()}")
+        fails.append(f"bin/lab: bash syntax error: {r.stderr.strip()}")
     else:
-        oks.append("phase1/lab: syntax clean")
+        oks.append("bin/lab: syntax clean")
 
 # ---- 2. every config must parse ----
-litellm = load("phase1/litellm-config.yaml")
-prom = load("phase1/prometheus.yml")
-swap_desktop = load("phase1/llama-swap.yaml")
-swap_laptop = load("phase2/llama-swap-laptop.yaml")
-load("phase1/docker-compose.yml")
+litellm = load("serving/litellm-config.yaml")
+prom = load("monitoring/prometheus.yml")
+swap_desktop = load("nodes/desktop/llama-swap.yaml")
+swap_laptop = load("nodes/laptop/llama-swap.yaml")
+load("monitoring/docker-compose.yml")
 
 # Which llama-swap config answers on which address. Both nodes listen on :8080.
 BY_HOST = {

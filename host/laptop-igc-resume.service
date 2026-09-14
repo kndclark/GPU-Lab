@@ -12,7 +12,7 @@
 # up to ten seconds to see whether the NIC recovers by itself.
 [Unit]
 Description=Repair the GPU-lab direct-link NIC after resume
-Documentation=file:/home/david/gpu-lab/phase0/README.md
+Documentation=file:/home/david/gpu-lab/host/README.md
 DefaultDependencies=no
 StopWhenUnneeded=yes
 Before=sleep.target
