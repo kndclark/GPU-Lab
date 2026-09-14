@@ -1,0 +1,22 @@
+[Unit]
+Description=llama-swap model router (laptop / sm_120 node)
+After=network-online.target docker.service
+Requires=docker.service
+# Weights live on the desktop's NFS export, reached over the direct link. Without
+# this the unit starts, llama-swap accepts a request, and the upstream dies on a
+# missing model path -- which reads as an engine fault rather than a dead mount.
+RequiresMountsFor=/srv/model-cache
+
+[Service]
+Type=simple
+User=david
+Group=david
+# david is in the docker group, so no sudo is needed to launch upstreams.
+ExecStart=/usr/local/bin/llama-swap --config /home/david/gpu-lab/phase2/llama-swap-laptop.yaml --listen 0.0.0.0:8080
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
