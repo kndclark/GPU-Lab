@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Gate the deploy, because in this repo the push IS the deploy: origin carries a
+# second push URL whose post-receive hook runs "checkout -f main" on the desktop.
+# A check that runs after the push has already lost.
+#
+# Enable with:  git config core.hooksPath .githooks
+# Bypass once:  LAB_SKIP_CHECK=1 git push        (or --no-verify)
+set -euo pipefail
+
+if [ "${LAB_SKIP_CHECK:-}" = 1 ]; then
+    echo "pre-push: LAB_SKIP_CHECK=1 -- skipping validation" >&2
+    exit 0
+fi
+
+root=$(git rev-parse --show-toplevel)
+echo "pre-push: validating configs before they deploy"
+if ! python3 "$root/phase1/check.py"; then
+    cat >&2 <<'MSG'
+
+pre-push: REFUSED. The configuration above would deploy to the desktop as-is.
+          Fix it, or push with LAB_SKIP_CHECK=1 if you accept the breakage.
+MSG
+    exit 1
+fi
