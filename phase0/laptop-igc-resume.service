@@ -1,0 +1,28 @@
+# Laptop only. Runs laptop-igc-resume-repair.sh after every resume.
+#
+# This is the documented "hook program code after the sleep operation" shape
+# from systemd.special(7): the unit starts (doing nothing) before sleep.target,
+# stays active across the suspend, and runs ExecStop= once nothing needs it
+# any more - which is on resume. sleep.target is pulled in by all four sleep
+# types, so one unit covers suspend, hibernate, hybrid-sleep and
+# suspend-then-hibernate.
+#
+# Deliberately NOT a /usr/lib/systemd/system-sleep/ script: those run with
+# user.slice frozen and block the resume until they finish, and this one waits
+# up to ten seconds to see whether the NIC recovers by itself.
+[Unit]
+Description=Repair the GPU-lab direct-link NIC after resume
+Documentation=file:/home/david/gpu-lab/phase0/README.md
+DefaultDependencies=no
+StopWhenUnneeded=yes
+Before=sleep.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/usr/local/sbin/gpu-lab-igc-resume-repair
+TimeoutStopSec=90
+
+[Install]
+WantedBy=sleep.target
