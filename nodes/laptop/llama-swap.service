@@ -12,7 +12,7 @@ Type=simple
 User=david
 Group=david
 # david is in the docker group, so no sudo is needed to launch upstreams.
-ExecStart=/usr/local/bin/llama-swap --config /home/david/gpu-lab/phase2/llama-swap-laptop.yaml --listen 0.0.0.0:8080
+ExecStart=/usr/local/bin/llama-swap --config /home/david/gpu-lab/nodes/laptop/llama-swap.yaml --listen 0.0.0.0:8080
 Restart=on-failure
 RestartSec=5
 KillMode=mixed

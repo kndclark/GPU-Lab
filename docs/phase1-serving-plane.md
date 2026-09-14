@@ -33,13 +33,13 @@ and add it to `litellm-config.yaml`.
 
 ## Baseline
 
-Recorded 2026-09-13, 50 samples, `phase1/baseline-qwen3-coder-32k.json`:
+Recorded 2026-09-13, 50 samples, `bench/baseline-qwen3-coder-32k.json`:
 
     TTFT         p50  0.016 s   p95  0.031 s
     decode rate  p50  175.9 tok/s   cv 0.5%
     thermals     40 -> 70 C, 321 W, no throttle
 
-Reproduce with `python3 phase1/bench.py --repeats 10`. **Do not edit the prompt
+Reproduce with `python3 bench/bench.py --repeats 10`. **Do not edit the prompt
 set in `bench.py`** without resetting the baseline — comparing across different
 prompts compares nothing.
 
@@ -66,7 +66,7 @@ preemptions and aggregate throughput of 305 tok/s.
 
 ## Operating it
 
-Use `phase1/lab` on the desktop. From the laptop, prefix with `ssh llm`.
+Use `bin/lab` on the desktop. From the laptop, prefix with `ssh llm`.
 
     lab up                 start everything
     lab up --warm          ...and preload the coder (~90s), so the first real
@@ -97,9 +97,9 @@ Editing config:
     # after editing llama-swap.yaml
     sudo systemctl restart llama-swap
     # after editing litellm-config.yaml
-    cd phase1 && sudo docker compose restart litellm
+    bin/lab reload litellm
     # after editing prometheus.yml
-    cd phase1 && sudo docker compose restart prometheus
+    bin/lab reload prometheus
 
 Remember both nodes track git: edit on the laptop, `git push`, and the desktop
 checks out automatically. Editing directly on the desktop will be overwritten by
@@ -107,7 +107,7 @@ the next push.
 
 ### Rule: every new component goes into `lab`
 
-**When you add a service to the lab, wire it into `phase1/lab` in the same change**
+**When you add a service to the lab, wire it into `bin/lab` in the same change**
 -- `up`, `down`, and `status`. Never leave starting or stopping it as a step
 someone has to remember.
 

@@ -70,7 +70,7 @@ Three choices in it are deliberate:
 
 No carrier after a successful rebind is reported, not treated as an error — that
 is the legitimate "desktop is off" case. Run it by hand any time:
-`sudo /usr/local/sbin/gpu-lab-igc-resume-repair`. `phase1/lab status` reports the
+`sudo /usr/local/sbin/gpu-lab-igc-resume-repair`. `bin/lab status` reports the
 link on either node.
 
 ## The shared model cache

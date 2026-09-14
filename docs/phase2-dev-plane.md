@@ -41,11 +41,11 @@ fallback, which is the confound the whole two-arch premise depends on avoiding.
 
 `llama-swap` v255 (byte-identical to the desktop's, sha256 verified) on
 `:8080`, serving `qwen3-embed` on pinned `:8102`. Managed by
-`phase1/lab`, which is now node-aware.
+`bin/lab`, which is now node-aware.
 
 ```bash
-phase1/lab up --warm     # starts llama-swap, preloads the embedding model
-phase1/lab status        # reports which node it is on
+bin/lab up --warm     # starts llama-swap, preloads the embedding model
+bin/lab status        # reports which node it is on
 ```
 
 **Why embeddings moved here.** The coder alone takes 23.2 of the 3090's

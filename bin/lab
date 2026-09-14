@@ -56,9 +56,9 @@ NODE=$(detect_node)
 
 case "$NODE" in
     desktop)
-        SWAP_CONFIG=$REPO/phase1/llama-swap.yaml
-        SWAP_UNIT=$REPO/phase1/llama-swap.service
-        COMPOSE_DIR=$REPO/phase1     # LiteLLM + Prometheus + Grafana live here only
+        SWAP_CONFIG=$REPO/nodes/desktop/llama-swap.yaml
+        SWAP_UNIT=$REPO/nodes/desktop/llama-swap.service
+        COMPOSE_DIR=$REPO/monitoring # LiteLLM + Prometheus + Grafana live here only
         HAS_COMPOSE=1
         WARM_MODEL=qwen3-coder
         WARM_KIND=chat
@@ -67,8 +67,8 @@ case "$NODE" in
         FRONT_DOOR="http://10.10.0.1:4000/v1"
         ;;
     laptop)
-        SWAP_CONFIG=$REPO/phase2/llama-swap-laptop.yaml
-        SWAP_UNIT=$REPO/phase2/llama-swap-laptop.service
+        SWAP_CONFIG=$REPO/nodes/laptop/llama-swap.yaml
+        SWAP_UNIT=$REPO/nodes/laptop/llama-swap.service
         COMPOSE_DIR=
         HAS_COMPOSE=0
         WARM_MODEL=qwen3-embed
@@ -257,7 +257,7 @@ cmd_status() {
     say "direct link"
     # Node-agnostic: find whichever end of the /30 this machine owns. A dead
     # link here is the single most common reason the lab looks unreachable from
-    # an otherwise healthy server -- see phase0/laptop-igc-resume-repair.sh.
+    # an otherwise healthy server -- see host/laptop-igc-resume-repair.sh.
     dev=$(ip -o route show 10.10.0.0/30 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)
     if [ -z "$dev" ]; then
         ok "DOWN -- no 10.10.0.0/30 route (laptop: sudo /usr/local/sbin/gpu-lab-igc-resume-repair)"
@@ -293,10 +293,10 @@ litellm    http://localhost:4000/health/liveliness"
 # 403. A restart is the only way to apply an edit, and "docker compose up -d"
 # will not do it -- the container spec is unchanged, so compose sees no drift.
 # Push is deploy in this repo, so validation has to happen before the push, not
-# after it. See phase1/check.py.
+# after it. See bin/check.py.
 cmd_check() {
     say "checking configs ($NODE)"
-    python3 "$REPO/phase1/check.py"
+    python3 "$REPO/bin/check.py"
 }
 
 # The installed unit lives in /etc/systemd/system, outside the repo, so a deploy
@@ -343,7 +343,7 @@ cmd_reload() {
                     if [ "$HAS_COMPOSE" = 1 ]; then
                         compose_svcs="$compose_svcs $svc"
                     else
-                        echo "$svc runs on the desktop, not here: ssh llm '$REPO/phase1/lab reload $svc'" >&2
+                        echo "$svc runs on the desktop, not here: ssh llm '$REPO/bin/lab reload $svc'" >&2
                         exit 1
                     fi ;;
                 *) echo "unknown service: $svc" >&2
@@ -374,7 +374,7 @@ cmd_logs() {
             if [ "$HAS_COMPOSE" = 1 ]; then
                 ( cd "$COMPOSE_DIR" && sudo docker compose logs -f "$1" )
             else
-                echo "$1 runs on the desktop, not here: ssh llm '$REPO/phase1/lab logs $1'" >&2; exit 1
+                echo "$1 runs on the desktop, not here: ssh llm '$REPO/bin/lab logs $1'" >&2; exit 1
             fi ;;
         *) echo "usage: lab logs <llama-swap|model|litellm|prometheus|grafana>" >&2; exit 1 ;;
     esac

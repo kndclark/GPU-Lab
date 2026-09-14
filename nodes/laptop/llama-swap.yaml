@@ -2,7 +2,7 @@
 #
 # This node has no front door of its own: the desktop's LiteLLM routes to it over
 # the direct link at http://10.10.0.2:8080/v1. That is the integration point
-# phase1/litellm-config.yaml was built to accept.
+# serving/litellm-config.yaml was built to accept.
 #
 # Why the embedding model lives here rather than on the desktop: the coder alone
 # takes 23.2 of the 3090's 24.5 GiB, so the two models cannot be co-resident and

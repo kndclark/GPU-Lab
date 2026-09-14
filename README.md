@@ -23,20 +23,29 @@ Both: Ubuntu 26.04.1, kernel 7.0.0-31-generic, driver 595.91.07, CUDA 13.2,
 docker-ce 29.8.0, nvidia-container-toolkit 1.20.0-1.
 
 Connected by a direct 2.5GbE cable on a private /30 (`10.10.0.1` / `10.10.0.2`),
-0.55 ms RTT. See [phase0/](phase0/).
+0.55 ms RTT. See [host/](host/).
 
 ## Contents
 
-    Dockerfile        one image recipe, two architecture targets
-    arch_probe.cu     runtime proof that a container's kernels match its host GPU
-    build.sh          builds gpu-lab:sm86 or gpu-lab:sm120 (auto-detects by compute cap)
-    phase0/           the host configuration that is not reproducible from code alone
+Organised by what runs where, not by the phase that introduced it. Phases are a
+plan axis; they stopped describing the tree the moment a second node appeared and
+Phase 2's endpoint had to be configured in Phase 1's files.
+
+    bin/lab           control the serving plane on either node; it is node-aware
+    bin/check.py      pre-push validation -- a config must be able to serve before it deploys
+    arch/             one image recipe, two architecture targets, and the runtime arch proof
+    nodes/            per-node llama-swap config + systemd unit (desktop sm_86, laptop sm_120)
+    serving/          LiteLLM, the single front door across both nodes
+    monitoring/       Prometheus, Grafana, and the compose stack behind them
+    bench/            the benchmark and its recorded baseline
+    host/             host configuration that is not reproducible from code alone
+    docs/             what each phase delivered
 
 ## Build
 
-    ./build.sh          # auto-detect from nvidia-smi compute_cap
-    ./build.sh sm86     # explicit
-    ./build.sh sm120
+    arch/build.sh          # auto-detect from nvidia-smi compute_cap
+    arch/build.sh sm86     # explicit
+    arch/build.sh sm120
 
 ## The one thing to understand before changing the build
 
@@ -92,7 +101,7 @@ recover on its own if the laptop is unavailable:
 That is the fallback, not the normal path. Pushing from the laptop stays primary
 because it is the only route that forces a checkout — a `pull` the desktop never
 runs leaves it silently stale. It also works with the internet down, over the
-direct cable. `ssh llm` is the direct-link alias (see [phase0/](phase0/)).
+direct cable. `ssh llm` is the direct-link alias (see [host/](host/)).
 
 To confirm both nodes agree before a measurement run:
 
@@ -101,5 +110,12 @@ To confirm both nodes agree before a measurement run:
 
 ## Status
 
-Phase 0 complete. Next: Phase 1 — vLLM behind llama-swap on the 3090,
-Prometheus/Grafana on `/metrics`, LiteLLM as a single front door across both nodes.
+Phases 0 and 1 complete. Phase 2 is under way: the prebuilt vLLM image serves on
+sm_120, so the laptop now hosts the embedding model and the two models no longer
+contend for one card. Still open: the source build against `compute_120f`, and
+`pytest tests/kernels` on both nodes — which is where the differential is born and
+without which Phase 2 is not finished. See [docs/](docs/).
+
+Pushing deploys. Enable the pre-push check once per clone:
+
+    git config core.hooksPath .githooks
