@@ -7,6 +7,8 @@
 #   lab down    [--boot-off] stop everything (optionally also disable autostart)
 #   lab status               what is running, and is the GPU actually free
 #   lab reload  [svc]        apply edited config files (they are read-only mounts)
+#   lab check                validate configs before a push deploys them
+#   lab install              (re)write this node's systemd unit from the repo
 #   lab logs    <svc>        follow logs (llama-swap|litellm|prometheus|grafana|model)
 #== end usage ==
 #
@@ -46,7 +48,7 @@ detect_node() {
 # Usage is answered before the node gate: on a third machine "lab" used to print
 # its own help, and a node-detection failure should not take that away.
 case "${1:-}" in
-    up|down|status|reload|logs) ;;
+    up|down|status|reload|logs|check|install) ;;
     *) awk '/^#== usage ==/{f=1;next} /^#== end usage ==/{f=0} f' "$0" | sed 's/^# \?//'; exit 1 ;;
 esac
 
@@ -55,6 +57,7 @@ NODE=$(detect_node)
 case "$NODE" in
     desktop)
         SWAP_CONFIG=$REPO/phase1/llama-swap.yaml
+        SWAP_UNIT=$REPO/phase1/llama-swap.service
         COMPOSE_DIR=$REPO/phase1     # LiteLLM + Prometheus + Grafana live here only
         HAS_COMPOSE=1
         WARM_MODEL=qwen3-coder
@@ -65,6 +68,7 @@ case "$NODE" in
         ;;
     laptop)
         SWAP_CONFIG=$REPO/phase2/llama-swap-laptop.yaml
+        SWAP_UNIT=$REPO/phase2/llama-swap-laptop.service
         COMPOSE_DIR=
         HAS_COMPOSE=0
         WARM_MODEL=qwen3-embed
@@ -288,6 +292,37 @@ litellm    http://localhost:4000/health/liveliness"
 # re-read either: it runs without --web.enable-lifecycle, so POST /-/reload is
 # 403. A restart is the only way to apply an edit, and "docker compose up -d"
 # will not do it -- the container spec is unchanged, so compose sees no drift.
+# Push is deploy in this repo, so validation has to happen before the push, not
+# after it. See phase1/check.py.
+cmd_check() {
+    say "checking configs ($NODE)"
+    python3 "$REPO/phase1/check.py"
+}
+
+# The installed unit lives in /etc/systemd/system, outside the repo, so a deploy
+# cannot update it: "git checkout -f main" moves the config file and leaves the
+# unit pointing at the old path. Nothing notices until the next restart, which
+# may be a reboot weeks later. This is the command that closes that gap, and it
+# is why moving files in this repo is a two-step migration rather than a git mv.
+cmd_install() {
+    local dest=/etc/systemd/system/llama-swap.service
+    if [ ! -f "$SWAP_UNIT" ]; then
+        echo "missing unit source: $SWAP_UNIT" >&2; exit 1
+    fi
+    say "installing $NODE unit from $(basename "$SWAP_UNIT")"
+    if [ -f "$dest" ] && cmp -s "$SWAP_UNIT" "$dest"; then
+        ok "already current -- nothing to do"
+        return 0
+    fi
+    sudo install -m 0644 "$SWAP_UNIT" "$dest"
+    sudo systemctl daemon-reload
+    ok "installed and daemon-reloaded"
+    # Deliberately NOT restarting: that evicts a loaded model. Say so instead.
+    if [ "$(sudo systemctl is-active llama-swap 2>/dev/null || true)" = active ]; then
+        ok "llama-swap is running on the OLD unit -- 'lab reload' to adopt this one"
+    fi
+}
+
 cmd_reload() {
     local want="$*" compose_svcs="" restart_swap=0 svc
     if [ -z "$want" ]; then
@@ -351,5 +386,7 @@ case "${1:-}" in
     status) cmd_status ;;
     logs)   shift; cmd_logs "${1:-}" ;;
     reload) shift; cmd_reload "$*" ;;
+    check)  cmd_check ;;
+    install) cmd_install ;;
     *) awk '/^#== usage ==/{f=1;next} /^#== end usage ==/{f=0} f' "$0" | sed 's/^# \?//'; exit 1 ;;
 esac
