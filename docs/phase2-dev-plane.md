@@ -56,20 +56,123 @@ on different cards. `--gpu-memory-utilization` is 0.30 rather than the desktop's
 measured steady state is 8.4 GiB of 24463 MiB, leaving ~16 GiB free for
 experiments.
 
+## Step 4: the kernel differential runs on the prebuilt wheel
+
+The runbook puts `pytest tests/kernels` after a source build against
+`compute_120f`. It does not need to be: **the differential runs against the
+pinned wheel, with no source build at all.** A source build is required to
+*modify* kernels. It is not required to *differentiate* them, and that is
+several days of the Phase 2 estimate.
+
+`kernels/` holds the harness. One image, `gpu-lab:kernels` -- the pinned
+`vllm/vllm-openai:v0.29.0` plus five pinned test dependencies and the `tests/`
+tree from the matching upstream tag. It is built once and moved across the
+direct link with `docker save | docker load` (65 s), so both nodes run a
+bit-identical harness; verified by image ID, `sha256:97e2441087b4...` on each.
+
+```bash
+kernels/build.sh                                    # build (laptop)
+sudo docker save gpu-lab:kernels | ssh llm 'sudo docker load'
+SUITE=quant-core kernels/run.sh $(grep -v '^#' kernels/SUITE.txt)   # each node
+kernels/compare.py kernels/results/sm_86-quant-core.xml \
+                   kernels/results/sm_120-quant-core.xml
+kernels/overnight.sh                                # whole suite, detached
+```
+
+### The first genuine sm_86/sm_120 disagreement
+
+Same image, same six test files, same command:
+
+| | sm_86 (3090) | sm_120 (5090 Laptop) |
+|---|---|---|
+| collected | 274 | **344** |
+| passed | 270 | 342 |
+| skipped | 4 | 2 |
+
+**The two cards do not even run the same tests.** 72 NVFP4 tests exist on
+sm_120 and do not exist on sm_86 -- `test_nvfp4_quant.py` and
+`test_nvfp4_scaled_mm.py` are skipped at *collection* on the 3090, so their
+tests never materialise. Of the 272 tests both nodes do run, **zero disagree**,
+which is what makes the structural gap the finding rather than noise.
+
+The cause is one line at the top of each of those files:
+
+```python
+if not current_platform.has_device_capability(100):
+    pytest.skip(reason="Nvfp4 Requires compute capability of 10 or above.",
+                allow_module_level=True)
+```
+
+`has_device_capability` compares `major * 10 + minor`, confirmed on both cards:
+sm_86 is 86, below 100, so the module is skipped; sm_120 is **120**, above 100,
+so it is admitted.
+
+**That is a family assumption enforced as a numeric threshold, and the
+arithmetic admits a family the reason string does not name.** "Compute
+capability 10 or above" means SM100 -- datacenter Blackwell, which has NVFP4
+tensor cores. Consumer Blackwell is the 12.x family, and per the runbook (§02)
+the 10.x and 12.x families are not cross-compatible in either direction. sm_120
+runs these tests because 120 > 100, not because anyone decided it should.
+
+And they pass -- all 72. That is worth stating carefully, because it **narrows a
+runbook claim rather than confirming it.** The runbook warns that the SM120
+NVFP4 path "produces garbage output or crashes" (cutlass#3096,
+flashinfer#2723). Those reports are specifically about CUTLASS *grouped
+block-scaled* GEMM, the MoE path. The ops covered here -- NVFP4 quantisation,
+swizzled and padded scale-factor layouts, and plain (non-grouped) NVFP4 GEMM --
+are correct on consumer Blackwell. The `--moe-backend marlin` correction remains
+untested, not disproven; `tests/kernels/moe` is where it would show, and it is
+second in the overnight order for that reason.
+
+A quieter result in the same run: **all 241 FP8 quantisation tests pass on the
+3090**, which has no FP8 compute at all (that needs CC >= 8.9). This is the
+runbook's own correction observed directly -- FP8 *checkpoints* are fine on
+Ampere via dequantisation; only FP8 *math* is not. The tests exercise the
+quantisation ops, not tensor-core FP8 GEMM.
+
+### Traps this harness had to design around
+
+- **The source tree shadows the wheel.** pytest puts the working directory on
+  `sys.path`, so running from a vLLM checkout makes `import vllm` resolve to
+  uncompiled source instead of the installed package. The image therefore
+  carries `tests/` and `pyproject.toml` and *not* `vllm/`. Check with
+  `python3 -c "import vllm; print(vllm.__file__)"` -- it must print a path under
+  `dist-packages`.
+- **The full test requirements would move torch.** They resolve to several
+  hundred packages including ray and lm-eval. `pip install --no-deps` of five
+  pinned packages keeps torch at `2.13.0+cu130` on both nodes, which is the
+  thing that makes them comparable. Re-check after any edit to the Dockerfile.
+- **Collect errors without a GPU are fiction.** Collecting `tests/kernels` in a
+  container started without `--gpus all` reports import errors in five
+  quantization files; with the GPU attached the same command collects 7090 tests
+  and zero errors. The difference is `libcuda.so.1`. Never size or triage this
+  suite from a CPU-only container.
+- **An interrupted pytest writes no XML at all.** The junit file is written at
+  the end of the run, so a twelve-hour invocation killed at hour eleven yields
+  nothing. `overnight.sh` runs one directory per invocation, highest-value
+  first, so a partial night still leaves complete results.
+- **A run holds the whole card.** `run.sh` refuses to start above 2000 MiB, and
+  `overnight.sh` takes the serving plane down for the duration and restores it
+  from an EXIT trap. On the laptop it also holds `systemd-inhibit
+  --what=sleep:idle:handle-lid-switch`, because a lid-close would end the run
+  *and* wedge the I226-V NIC, making an aborted run look like an unreachable
+  node.
+
 ## Not done
 
-- **Source build against `compute_120f`, FlashInfer, CUTLASS.** Step 1 succeeding
-  does not make this unnecessary — it makes it *elective for serving* and still
-  required for kernel work. Nothing here has exercised the NVFP4 MoE path, so the
-  `--moe-backend marlin` correction remains untested rather than disproven.
-- **llama.cpp with expert offload** for a 120B-class MoE (`--n-cpu-moe` ≈ 21).
-- **`pytest tests/kernels` on both nodes.** This is where the differential is
-  born and it is the only route to the "one genuine sm_86/sm_120 disagreement,
-  identified and understood" exit criterion. **Phase 2 is not complete without
-  it.**
+- **Source build against `compute_120f`, FlashInfer, CUTLASS.** Still required
+  to *change* kernels; no longer required to measure them, which is the part
+  that has now been demonstrated rather than assumed.
+- **llama.cpp with expert offload** for a 120B-class MoE (`--n-cpu-moe` ~ 21).
+- **The whole suite on both nodes.** Only the six-file `quant-core` subset has
+  run on both. `overnight.sh` covers quantization, moe, attention, core, ir and
+  mamba; `moe` is the one that matters, because it is where the NVFP4 MoE claim
+  lives.
+- **Nothing is pushed.** The harness exists on both nodes -- on the desktop as
+  untracked files copied over ssh, not via the deploy path -- and the desktop's
+  `bin/lab` is still the version without the kernel-container sweep.
 
 ## Still unsettled
 
-The runbook's §05 fork — engine development or application development — is not
-recorded as answered. The work above was chosen because it pays off either way.
-The source build and the kernel differential do not: they serve engine work only.
+The runbook's §05 fork -- engine development or application development -- is
+not recorded as answered. Phase 2's remaining items serve engine work only.
