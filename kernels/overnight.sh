@@ -6,12 +6,24 @@
 # Three things this exists to get right, none of which a single long pytest
 # invocation does:
 #
-# 1. ONE XML PER DIRECTORY. pytest writes its junit XML at the end of the run,
-#    so a twelve-hour invocation that gets interrupted at hour eleven produces
-#    nothing at all. Directories are run separately and in a fixed order, so an
-#    overnight that does not finish still leaves complete, comparable results
-#    for the directories that did. Highest-value first, for the same reason:
-#    quantization and moe are where the two cards differ.
+# 1. ONE PYTEST PROCESS PER FILE. Two separate reasons, both learned the hard
+#    way on the night of 2026-09-15.
+#
+#    pytest writes its junit XML at the end of a run, so a twelve-hour
+#    invocation interrupted at hour eleven produces nothing at all.
+#
+#    Worse: a test that kills the CUDA context takes every later test in the
+#    same process down with it, and they are recorded as ordinary failures. On
+#    sm_120 one device-side assert in test_silu_mul_fp8_quant_deep_gemm turned
+#    into 1882 bogus MoE "failures", and a second in test_block_fp8 voided 6758
+#    quantization tests -- including the INT8 results that the earlier targeted
+#    run had measured cleanly. Nothing in the output distinguishes a real
+#    failure from collateral damage.
+#
+#    So each FILE gets its own pytest process. A context kill then voids the
+#    rest of that one file instead of the rest of the night. Directories are
+#    still ordered highest-value first, because quantization and moe are where
+#    the two cards differ.
 #
 # 2. THE LAPTOP MUST NOT SUSPEND. A lid-close ends the run and wedges the I226-V
 #    NIC on the way down (host/README.md), so the morning's symptom would be an
@@ -53,9 +65,21 @@ run_all() {
     for d in "${DIRS[@]}"; do
         echo
         echo "=== $d  ($(date -u +%FT%TZ)) ==="
-        # run.sh is the single entry point, so the overnight run and a hand-run
-        # produce identically-named, identically-produced artifacts.
-        SUITE="$d" "$here/run.sh" "tests/kernels/$d" || echo "!!! $d did not complete -- continuing to the next directory"
+        # The tests live inside the image, not on the host, so the image is what
+        # knows which files exist.
+        files=$(sudo docker run --rm --entrypoint bash gpu-lab:kernels \
+                    -c "find tests/kernels/$d -name 'test_*.py' | sort" 2>/dev/null)
+        if [ -z "$files" ]; then
+            echo "!!! no test files found under tests/kernels/$d -- skipping"
+            continue
+        fi
+        for f in $files; do
+            name="$d-$(basename "$f" .py)"
+            echo "--- $name  ($(date -u +%FT%TZ)) ---"
+            # run.sh is the single entry point, so the overnight run and a
+            # hand-run produce identically-named, identical artifacts.
+            SUITE="$name" "$here/run.sh" "$f" || echo "!!! $name did not complete"
+        done
     done
 
     echo

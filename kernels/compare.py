@@ -17,6 +17,7 @@ byte-identical test code can disagree:
 A skip is evidence, not an absence of evidence: the reason string usually names
 the capability that decided it.
 """
+import gzip
 import sys
 import xml.etree.ElementTree as ET
 from collections import Counter
@@ -25,7 +26,7 @@ from collections import Counter
 def load(path):
     """nodeid -> (outcome, reason). Outcome is pass/fail/error/skip."""
     out = {}
-    for case in ET.parse(path).getroot().iter("testcase"):
+    for case in _parse(path).getroot().iter("testcase"):
         nodeid = f"{case.get('classname', '')}::{case.get('name', '')}"
         outcome, reason = "pass", ""
         for kind, label in (("failure", "fail"), ("error", "error"), ("skipped", "skip")):
@@ -36,6 +37,57 @@ def load(path):
                 break
         out[nodeid] = (outcome, reason)
     return out
+
+
+def _parse(path):
+    """Results are stored gzipped -- 22 MB of XML is 0.3 MB, and this repo
+    deploys on push, so uncompressed artefacts would bloat every clone."""
+    if str(path).endswith(".gz"):
+        with gzip.open(path, "rb") as fh:
+            return ET.parse(fh)
+    return ET.parse(path)
+
+
+CONTEXT_KILL = ("unspecified launch failure", "CUDA error: an illegal memory access")
+
+
+def cascade(path):
+    """Find where a killed CUDA context starts poisoning everything after it.
+
+    A device-side assert or illegal access destroys the CUDA context, and every
+    later test in the same pytest process then fails with the same message --
+    recorded as ordinary failures, indistinguishable from real ones. On the
+    night of 2026-09-15 this turned one bad kernel into 1882 bogus MoE failures
+    and voided 6758 quantization tests. Any count taken past this index is not
+    evidence.
+
+    Returns (index, total, poisoned) or None.
+    """
+    outcomes = []
+    for case in _parse(path).getroot().iter("testcase"):
+        bad, msg = False, ""
+        for kind in ("failure", "error"):
+            child = case.find(kind)
+            if child is not None:
+                bad, msg = True, (child.get("message") or "")
+                break
+        outcomes.append((bad, msg))
+    hits = [i for i, (bad, m) in enumerate(outcomes)
+            if bad and any(k in m for k in CONTEXT_KILL)]
+    if not hits:
+        return None
+    # Anchoring on the FIRST context kill is wrong: a test that forks a
+    # subprocess can raise one and recover, and the run carries on healthy for
+    # thousands of tests. (tests/kernels/moe has exactly this at index 3508,
+    # long before the kill at 6856 that actually ended the run.) So take the
+    # earliest point after which nearly everything fails, not the earliest
+    # point where a launch failure appears at all.
+    for i in hits:
+        after = outcomes[i:]
+        poisoned = sum(1 for bad, _ in after if bad)
+        if poisoned >= 50 and poisoned >= 0.7 * len(after):
+            return i, len(outcomes), poisoned
+    return None
 
 
 def short(reason, n=110):
@@ -56,6 +108,14 @@ def main():
 
     print(f"{a_name}\n  {totals(a)}")
     print(f"{b_name}\n  {totals(b)}")
+
+    for label, path in ((a_name, a_path), (b_name, b_path)):
+        c = cascade(path)
+        if c:
+            i, total, poisoned = c
+            print(f"\n  !! {label}: CUDA context killed at test {i} of {total}.")
+            print(f"     {poisoned} results after that point are collateral, not findings.")
+            print("     Re-run this file alone before trusting anything past that index.")
 
     only_a = sorted(set(a) - set(b))
     only_b = sorted(set(b) - set(a))

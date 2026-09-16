@@ -90,5 +90,10 @@ if [ ! -s "$results/${stem}.xml" ]; then
     echo "FAILED: no results XML was produced -- treat this run as void, not as a pass" >&2
     exit 1
 fi
+
+# Store compressed. A full attention run is 22 MB of XML and 0.3 MB gzipped,
+# and pushing here deploys, so uncompressed artefacts would bloat every clone
+# of this repo forever. compare.py reads .gz directly.
+gzip -f "$results/${stem}.xml"
 echo
-echo "wrote kernels/results/${stem}.xml"
+echo "wrote kernels/results/${stem}.xml.gz"

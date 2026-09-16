@@ -1,0 +1,4 @@
+# Console logs are 78 MB for one night and carry nothing the XML does not.
+*.log
+# Uncompressed XML: run.sh gzips its output; these are only ever transients.
+*.xml
