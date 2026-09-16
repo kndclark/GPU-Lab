@@ -74,8 +74,8 @@ bit-identical harness; verified by image ID, `sha256:97e2441087b4...` on each.
 kernels/build.sh                                    # build (laptop)
 sudo docker save gpu-lab:kernels | ssh llm 'sudo docker load'
 SUITE=quant-core kernels/run.sh $(grep -v '^#' kernels/SUITE.txt)   # each node
-kernels/compare.py kernels/results/sm_86-quant-core.xml \
-                   kernels/results/sm_120-quant-core.xml
+kernels/compare.py kernels/results/sm_86-quant-core.xml.gz \
+                   kernels/results/sm_120-quant-core.xml.gz
 kernels/overnight.sh                                # whole suite, detached
 ```
 
@@ -174,6 +174,107 @@ Note what this does to the first finding's framing: the numeric
 `has_device_capability(100)` gate lets sm_120 *into* NVFP4 tests it passes,
 while the absence of any gate lets it into INT8 tests it cannot pass. Capability
 gating in this codebase is inconsistent in both directions.
+
+## The overnight run, 2026-09-15 into 09-16
+
+Both nodes completed all six directories and restored their serving planes from
+the EXIT trap; the front door answered 200 afterwards. Raw counts:
+
+| directory | sm_86 (3090) | sm_120 (5090) |
+|---|---|---|
+| quantization | 5899 tests, 2307P 197F 17E 3378S | 10200 tests, 582P 3104F 3675E 2839S |
+| moe | 8004, 6044P 47F 1913S | 8792, 5298P 1939F 11E 1544S |
+| attention | 8272, 3426P **2757F** 2089S | 8280, 5968P 375F 1937S |
+| core | 3308, 3181P 71F 56S | 3308, 3208P 53F 47S |
+| ir | 1627, 1443P 0F 184S | 1627, 1443P 0F 184S |
+| mamba | 929, 895P 8F 26S | 929, 895P 8F 26S |
+
+**Read the last two rows first.** `ir` and `mamba` are identical on both cards,
+to the test. That is the control: the harness is not manufacturing differences,
+so the differences elsewhere are the cards.
+
+### Most of those failure counts are not findings
+
+The quantization and moe columns for sm_120 are largely **collateral from a
+killed CUDA context.** A device-side assert destroys the context, and every
+later test in the same pytest process then fails with
+`CUDA error: unspecified launch failure` -- recorded as an ordinary failure,
+indistinguishable from a real one.
+
+- **moe, sm_120:** context dies at test 6856 of 8792. 1894 of the 1936 results
+  after it are collateral. The honest count is ~45 real failures, not 1939.
+- **quantization, sm_120:** context dies at test 634 of 10200, and 6777 results
+  after it are collateral. **This voided the INT8 result** -- those tests run
+  after `test_block_fp8` and were swallowed, reported as launch failures rather
+  than as the clean `Int8 not supported on SM120` rejection the targeted run
+  had already measured. The targeted `quant-core` run stands; the overnight
+  quantization column does not, past index 634.
+
+`compare.py` now detects this and refuses to let the number pass unqualified.
+Its heuristic deliberately does not anchor on the *first* launch failure: moe
+has an isolated one at index 3508 that the run recovered from (a test that forks
+a subprocess), and treating that as the cascade would have written off 3300
+healthy tests. It takes the earliest point after which >= 70% of everything
+fails.
+
+**`overnight.sh` now runs one pytest process per FILE rather than per
+directory.** A context kill then voids the rest of that one file instead of the
+rest of the night.
+
+### The third disagreement: a hard crash on sm_120 that Ampere does not have
+
+`tests/kernels/moe/test_silu_mul_fp8_quant_deep_gemm.py`:
+
+| | sm_86 | sm_120 |
+|---|---|---|
+| | **23 passed** | 1 passed, 22 failed, 3 error |
+
+Reproduced in isolation, so it is not itself collateral. The root cause is a
+device-side assertion inside vLLM's bundled DeepGEMM:
+
+```
+Assertion failed: vllm/third_party/deep_gemm/include/deep_gemm/impls/
+smxx_layout.cuh:131, condition: (values[j] & 0x807fffffu) == 0
+```
+
+That mask is the sign bit plus the mantissa of an IEEE-754 float. The kernel is
+asserting that every scale factor is **exponent-only** -- a UE8M0 scale, the
+format DeepGEMM's block quantisation expects. On sm_120 something upstream hands
+it a scale that is not, and the kernel aborts the context rather than returning
+an error.
+
+This is the most serious of the three findings, and the most upstream-shaped:
+it is not a missing capability that a gate should have caught, it is a kernel
+crashing on hardware it was compiled for. It is also the cause of the moe
+cascade above -- one assert, ~1900 corrupted results.
+
+### The fourth: the same gap, pointing the other way
+
+sm_86's 2757 attention failures are **not** a cascade; they are real and they
+share one cause:
+
+```
+ValueError: type fp8e4nv not supported in this architecture.
+The supported fp8 dtypes are ('fp8e4b15', 'fp8e5')
+```
+
+2632 of them are Triton refusing to compile E4M3 FP8 kernels for Ampere
+(1296 in `test_merge_attn_states`, 1113 in `test_triton_unified_attention`).
+This is the CC >= 8.9 FP8 requirement showing up in the Triton compiler rather
+than in a capability gate, and it is the mirror image of the sm_120 results:
+**the 5090 fails quantization and MoE where the 3090 succeeds, and the 3090
+fails attention where the 5090 succeeds.** Neither card is the better one.
+
+A further 87 sm_86 attention failures are CUDA OOM, on a card that had the whole
+24 GiB free. Not yet investigated -- it may be a genuine capacity limit on the
+larger attention shapes, and it is the one number here I would not quote yet.
+
+### Known harness artefact
+
+17 quantization tests error in setup with
+`huggingface_hub.errors.LocalEntryNotFoundError`, because the image sets
+`HF_HUB_OFFLINE=1`. Both nodes hit it identically so it cancels out of the
+differential, but it is noise, not a finding.
 
 ### Traps this harness had to design around
 
