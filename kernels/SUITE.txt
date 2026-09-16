@@ -1,0 +1,17 @@
+# The differential suite: the exact targets both nodes run, in this order.
+# Kept in a file rather than in each invocation so the two nodes cannot drift.
+#
+# Chosen for arch sensitivity per unit of runtime, not for coverage. The full
+# tests/kernels/quantization directory is 7090 tests and runs for hours; these
+# are the files where sm_86 and sm_120 have the least in common:
+#   *_kernel_selection  which kernel the dispatcher picks for a capability
+#   fp8_quant           FP8 -- the 3090 is CC 8.6 and has no FP8 compute at all
+#   nvfp4_*             the SM120 path the runbook flags as producing garbage
+# The two 721-test GEMM files (cutlass_scaled_mm, marlin_gemm) are deliberately
+# out: they dominate runtime and their findings are throughput, not capability.
+tests/kernels/quantization/test_scaled_mm_kernel_selection.py
+tests/kernels/quantization/test_mxfp4_kernel_selection.py
+tests/kernels/quantization/test_w4a16_kernel_selection.py
+tests/kernels/quantization/test_fp8_quant.py
+tests/kernels/quantization/test_nvfp4_quant.py
+tests/kernels/quantization/test_nvfp4_scaled_mm.py

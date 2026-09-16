@@ -122,6 +122,16 @@ cmd_up() {
         exit 1
     fi
 
+    # Starting the serving plane during a kernel differential ruins the run: the
+    # first request loads a model into the card the suite is measuring, and the
+    # resulting allocation failures read as architecture findings rather than as
+    # a scheduling mistake. Warn loudly; do not block, because the operator may
+    # genuinely want serving back more than they want the run.
+    if sudo docker ps --format '{{.Names}}' | grep -q '^gpu-lab-kernels$'; then
+        echo "  WARNING: a kernel differential is running (kernels/run.sh)." >&2
+        echo "           Loading a model now will corrupt its results." >&2
+    fi
+
     say "$((n++))/$total  llama-swap (model router)"
     if [ ! -f "$SWAP_CONFIG" ]; then
         echo "  missing model config: $SWAP_CONFIG" >&2
@@ -199,8 +209,11 @@ cmd_down() {
     ok "llama-swap: $(sudo systemctl is-active llama-swap || true)"
     # Safety net: if llama-swap died uncleanly its upstream can outlive it and keep
     # the GPU pinned, which silently blocks the next start.
-    for c in $(sudo docker ps --format '{{.Names}}' | grep -E '^qwen3-' || true); do
-        ok "force-stopping orphaned upstream: $c"
+    # Also sweeps a kernel differential run (kernels/run.sh). That is not part of
+    # the serving plane, but it holds the entire card for as long as it lasts, and
+    # an interrupted run leaves its container behind to block the next model load.
+    for c in $(sudo docker ps --format '{{.Names}}' | grep -E '^(qwen3-|gpu-lab-kernels$)' || true); do
+        ok "force-stopping orphaned container: $c"
         sudo docker stop "$c" >/dev/null || true
     done
 
@@ -250,6 +263,9 @@ cmd_status() {
 
     say "models"
     sudo docker ps --format '  loaded: {{.Names}} ({{.Status}})' | grep qwen3 || ok "none loaded"
+    # A kernel differential owns the whole card while it runs. Say so here, or the
+    # GPU figure below reads as an unexplained anomaly.
+    sudo docker ps --format '  kernel run: {{.Names}} ({{.Status}})' | grep gpu-lab-kernels || true
 
     say "gpu"
     nvidia-smi --query-gpu=memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader | sed 's/^/  /'
