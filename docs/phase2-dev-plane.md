@@ -130,6 +130,51 @@ runbook's own correction observed directly -- FP8 *checkpoints* are fine on
 Ampere via dequantisation; only FP8 *math* is not. The tests exercise the
 quantisation ops, not tensor-core FP8 GEMM.
 
+### The second disagreement: the newer card lost a capability
+
+Found while the overnight run was starting, and stronger than the first,
+because it is an *outcome* disagreement rather than a structural one -- the two
+nodes run the same test and get different answers.
+
+**All 400 INT8 CUTLASS scaled-GEMM tests fail on sm_120. The identical test ids
+pass on sm_86.** Verified by running one nodeid on each node by hand, not by
+inference:
+
+```
+test_cutlass_int8_gemm[True-b_scale_group_shape0-a_scale_group_shape0-1-256-128]
+  sm_86  : 1 passed
+  sm_120 : 1 failed
+```
+
+It is not a numerical mismatch or a tolerance question. vLLM's own C++ dispatch
+refuses outright:
+
+```
+RuntimeError: dispatch_scaled_mm,
+csrc/libtorch_stable/quantization/w8a8/cutlass/c3x/scaled_mm_helper.hpp:34,
+Int8 not supported on SM120. Use FP8 quantization instead, or run on older
+arch (SM < 100).
+```
+
+**The 3090 can do something the 5090 cannot.** INT8 W8A8 CUTLASS GEMM is
+supported on Ampere and dropped on consumer Blackwell, and upstream's remedy in
+the error string -- "use FP8 quantization instead" -- is only available on the
+newer card. FP8 blockwise scaled GEMM does pass here, 19/19, so the suggested
+path is real. But it means an INT8-quantised checkpoint is a desktop-only model
+in this lab, and the LiteLLM config should never route one to the laptop.
+
+There is a contribution-shaped observation sitting on top of this. The NVFP4
+tests are *gated* -- sm_86 skips them cleanly at collection. The INT8 tests are
+*not* gated for SM120, so they fail instead of skipping. Upstream knows the
+capability is absent, because the dispatcher raises a specific error naming
+SM120; the test suite just has not been taught the same fact. That asymmetry is
+exactly the kind of thing the two-arch lab exists to notice.
+
+Note what this does to the first finding's framing: the numeric
+`has_device_capability(100)` gate lets sm_120 *into* NVFP4 tests it passes,
+while the absence of any gate lets it into INT8 tests it cannot pass. Capability
+gating in this codebase is inconsistent in both directions.
+
 ### Traps this harness had to design around
 
 - **The source tree shadows the wheel.** pytest puts the working directory on
