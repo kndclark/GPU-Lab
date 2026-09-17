@@ -49,8 +49,8 @@ a few of these results are close enough to a memory ceiling for that to matter.
 | [C1](#c1) | `test_cutlass_mla_decode.py` gates on the wrong function | test gate | ~~Strongest~~ **DEAD -- fixed upstream 2026-09-17** |
 | [C2](#c2) | INT8 CUTLASS tests are not gated for SM120 | test gate | **Live on `main`.** Needs a runtime repro |
 | [C3](#c3) | `cutlass_gemm_caller` `Error Internal` on 216 azp tests | kernel or gate -- unknown | Needs triage. Distinct from C2 |
-| [C4](#c4) | DeepGEMM device-side assert kills the CUDA context | kernel bug | **Live on DeepGEMM `main`.** Files against `deepseek-ai/DeepGEMM`, not vLLM |
-| [C5](#c5) | qutlass NVFP4 fused-quantize fails 132/132 on sm_120 | **kernel bug** | **Strongest.** `main` explicitly claims sm_120 support |
+| [C4](#c4) | A numeric gate feeds bf16-rounded scales to a kernel that asserts they are powers of two | **test gate** | **Strongest. Live on `main`, minimal repro in hand.** Same species as C1, and C1's merged fix is the precedent |
+| [C5](#c5) | qutlass NVFP4 fused-quantize fails 132/132 on sm_120 | **kernel bug** | Live. `main` explicitly claims sm_120 support |
 | [C6](#c6) | FlashInfer `trtllm` backend raises instead of skipping | test gate | **Live on `main`.** Low severity |
 | [C7](#c7) | NVFP4 *emulation* path will not compile on sm_86 | kernel or test | Needs triage |
 | [C8](#c8) | 2757 Ampere attention tests fail on `fp8e4nv` rather than skipping | test gate | Needs a "does upstream care" check first |
@@ -221,41 +221,56 @@ Two readings, and the evidence does not currently choose between them:
 be described as INT8-related in anything that leaves this repo.
 
 <a id="c4"></a>
-## C4 -- DeepGEMM device-side assert kills the CUDA context
+## C4 -- A numeric gate feeds bf16-rounded scales to a kernel that asserts they are powers of two
 
-**Highest severity of anything here**, because it is not a missing capability
-a gate should have caught -- it is a kernel crashing on hardware it was
-compiled for, in a way the process cannot recover from.
+**Re-diagnosed 2026-09-17, and the earlier write-up in this file was wrong in
+two ways.** It is not a DeepGEMM bug, and it is not a kernel crashing on
+hardware it was compiled for. It is **the same species as C1** -- a numeric
+capability threshold admitting consumer Blackwell to an SM100-only path -- and
+DeepGEMM's assert is correctly defending a documented contract that vLLM
+violates.
+
+**The chain, each link observed rather than inferred:**
+
+1. `test_silu_mul_fp8_quant_deep_gemm.py:258` gates a block on
+   `current_platform.has_device_capability(100)`. Numeric: sm_120 scores 120,
+   clears 100, and enters a block written for SM100.
+2. Inside, the test builds reference scales with `FLOAT32_CEIL_UE8M0`, whose
+   ceiling is `exp2(ceil(log2(s)))` evaluated **entirely in bfloat16**.
+3. That does not reliably land on an exact power of two once widened back to
+   float32. Observed: `0.00872802734375`, bits `0x3c0f0000`, mantissa `0x0f0000`.
+4. Those scales go to `transform_sf_into_required_layout`, which packs four
+   FP32 scales into one int32 by shifting each exponent into a byte -- valid
+   only for exact powers of two, and asserted as such.
+5. The device-side assert aborts the CUDA context. Every later test in the
+   process then reports `unspecified launch failure`: **1 real failure, 22
+   cascade failures and 22 teardown errors** in that file alone.
+
+**Minimal reproduction:** `kernels/repros/c4_ue8m0_pack_assert.py`. No pytest,
+no vLLM test tree, no weights. Same call, one value changed:
 
 ```
-Assertion failed:
-vllm/third_party/deep_gemm/include/deep_gemm/impls/smxx_layout.cuh:131,
-condition: (values[j] & 0x807fffffu) == 0
+$ python3 c4_ue8m0_pack_assert.py good    # scales all 0.015625 (2^-6)
+  returned (1, 4, 1) torch.int32: [121, 121, 121, 121]
+
+$ python3 c4_ue8m0_pack_assert.py bad     # one scale 0.00872802734375
+  AcceleratorError: CUDA error: unspecified launch failure
 ```
 
-That mask is the sign bit plus the mantissa of an IEEE-754 float. The kernel
-asserts every scale factor is **exponent-only** -- a UE8M0 scale. On sm_120
-something hands it a scale that is not, and it aborts the device context
-rather than returning an error.
+**The fix is C1's fix**, at `test_silu_mul_fp8_quant_deep_gemm.py:258`:
+`has_device_capability(100)` -> `is_device_capability_family(100)`. That change
+is already merged upstream for `test_cutlass_mla_decode.py`, which makes this a
+report with its own precedent attached rather than a proposal.
 
-**Observed at two independent call sites**, which is what makes it a bug rather
-than a flaky test:
+**Status on `main` (checked 2026-09-17): LIVE.** Line 258 is unchanged, and it
+is the only capability check in the file.
 
-- `test_silu_mul_fp8_quant_deep_gemm` -- sm_86: **23/23 pass**; sm_120: 1 pass,
-  22 fail, 22 teardown errors
-- `test_w8a8_block_fp8_deep_gemm_matmul` -- same root cause, different test
-
-Both reproduce in isolation, so neither is cascade collateral. The visible
-symptom downstream is `torch.AcceleratorError: CUDA error: unspecified launch
-failure` on every subsequent test in the same process -- this is the crash that
-caused the moe cascade in the first overnight run, and the reason
-`overnight.sh` now runs one process per file.
-
-**Still needed:** a minimal repro outside pytest -- construct the scale tensor
-the kernel receives, show a non-exponent-only value reaching it, and identify
-whether the bad scale originates in the sm_120 quantisation path or in the
-layout conversion. This is the one candidate where the repro is real work
-rather than a formality, and also the one most likely to be worth it.
+**What the sm_86 result actually means.** This file's earlier claim that "23/23
+pass on the 3090" implied Ampere computes this correctly. It does not compute it
+at all: `support_deep_gemm()` is `False` there, so the scale format resolves to
+`FLOAT32` and the DeepGEMM path never executes. Verified on both cards. A pass
+on Ampere here is evidence of non-execution, not of correctness -- and that
+distinction matters for every cross-architecture claim in this lab.
 
 <a id="c5"></a>
 ## C5 -- qutlass NVFP4 fused-quantize fails 132/132 on sm_120
