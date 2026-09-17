@@ -235,16 +235,32 @@ violates.
 1. `test_silu_mul_fp8_quant_deep_gemm.py:258` gates a block on
    `current_platform.has_device_capability(100)`. Numeric: sm_120 scores 120,
    clears 100, and enters a block written for SM100.
-2. Inside, the test builds reference scales with `FLOAT32_CEIL_UE8M0`, whose
-   ceiling is `exp2(ceil(log2(s)))` evaluated **entirely in bfloat16**.
-3. That does not reliably land on an exact power of two once widened back to
-   float32. Observed: `0.00872802734375`, bits `0x3c0f0000`, mantissa `0x0f0000`.
-4. Those scales go to `transform_sf_into_required_layout`, which packs four
-   FP32 scales into one int32 by shifting each exponent into a byte -- valid
-   only for exact powers of two, and asserted as such.
-5. The device-side assert aborts the CUDA context. Every later test in the
+2. Inside, the test builds reference scales with `FLOAT32_CEIL_UE8M0` and
+   passes them to `transform_sf_into_required_layout`, which packs four FP32
+   scales into one int32 by shifting each exponent into a byte -- valid only
+   for exact powers of two, and asserted as such.
+3. **Something in that path supplies a scale that is not a power of two.**
+   A scale with any mantissa bits set trips the assert: proven by the repro
+   below, where the only difference between success and a dead context is one
+   value.
+4. The device-side assert aborts the CUDA context. Every later test in the
    process then reports `unspecified launch failure`: **1 real failure, 22
    cascade failures and 22 teardown errors** in that file alone.
+
+**Link 3 is the open question, and two hypotheses are already dead.** It is not
+the quantize kernel: `persistent_masked_m_silu_mul_quant` was called directly
+across all three scale formats and all 21 documented shapes, and every scale it
+returned was conforming. It is not the bfloat16 ceiling either, which was the
+obvious suspect since `FLOAT32_CEIL_UE8M0` computes `exp2(ceil(log2(s)))` with
+every intermediate in bf16 -- `kernels/repros/c4_check_bf16_ceiling.py` returns
+**0 of 3695 non-conforming** across five shapes including the failing one.
+
+The live hypothesis, untested: **masked or padded rows.** The test passes
+`tokens_per_expert`, so rows beyond a given expert's token count are never
+written by the reference, and the pack kernel's own source carries the comment
+*"Write safe finite scale codes for PSUM gap rows; UE8M0 0xff is NaN"* -- so gap
+rows are a known hazard in this kernel. Confirming that means dumping the exact
+`_s` tensor at the failing call rather than reconstructing it.
 
 **Minimal reproduction:** `kernels/repros/c4_ue8m0_pack_assert.py`. No pytest,
 no vLLM test tree, no weights. Same call, one value changed:
