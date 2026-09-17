@@ -12,9 +12,21 @@ exists so a new session can pick up without re-deriving anything.
 3. The lab report artifact, which is the narrative version of both:
    https://claude.ai/artifact/PbAw4JBv8mPiGpRcBUvnj9
 
-**The one decision still open** is the runbook's §05 fork — engine development
-or application development. It is recorded nowhere as settled, and it decides
-whether Phase 3 is worth doing at all. Ask; do not assume.
+**The §05 fork is SETTLED (2026-09-17): engine development.** David chose it
+explicitly. Do not re-open it or re-ask.
+
+Choosing engine costs no application capability: Phase 1 already delivered the
+whole application platform and it keeps running. The front door, the routing,
+the metrics and both models are live regardless of what engine work is under
+way — and since `lab down --gpu-only`, even a training or kernel run leaves
+routing up and the laptop serving. The fork decided where effort goes, not
+which capability survives.
+
+The reasoning, for whoever questions it later: application development runs
+fine on one machine or a rented API, while a two-architecture differential with
+matched drivers, a byte-identical harness and a shared weight cache is rare and
+is the one thing these two cards together can do. Engine work spends the asset
+that was actually built.
 
 **Source of truth for the plan is the runbook, not this file:**
 https://claude.ai/code/artifact/ef6ac6fe-d2c7-4b18-9a31-7342e0473826
