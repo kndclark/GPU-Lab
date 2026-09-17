@@ -4,9 +4,17 @@ Every observation this lab has produced that might belong upstream rather than
 in a local note. One row per candidate, each with the evidence that exists
 today and the specific thing still missing before it could be filed.
 
-**Nothing here has been filed.** Nothing here has been reproduced against
-upstream `main` either -- see [Before filing anything](#before-filing-anything),
-which is the gate every candidate has to pass and none has passed yet.
+**Nothing here has been filed.** But the first gate -- *does upstream still
+have this?* -- has now been run against `main` by source inspection, and it
+changed the ledger: see [Triage against main](#triage-against-main).
+
+**What source inspection can and cannot settle.** It can *kill* a candidate
+outright: if the code upstream now reads the way the fix would, there is
+nothing to file, and C1 died exactly that way in about thirty seconds. It
+cannot *confirm* one. An unchanged test gate plus a silently fixed kernel still
+produces a passing test, so every candidate still marked live below needs a
+runtime reproduction on a `main` build before anyone writes an issue. Source
+inspection is the cheap filter, not the proof.
 
 The bar for this file is deliberately higher than "sm_86 and sm_120 disagree".
 A disagreement is a lead. It earns a row here only when it survives three
@@ -38,20 +46,50 @@ a few of these results are close enough to a memory ceiling for that to matter.
 
 | ID | Candidate | Kind | Readiness |
 |---|---|---|---|
-| [C1](#c1) | `test_cutlass_mla_decode.py` gates on the wrong function | test gate | **Strongest.** Fix is known and sits in the same file |
-| [C2](#c2) | INT8 CUTLASS tests are not gated for SM120 | test gate | Ready once reproduced on `main` |
+| [C1](#c1) | `test_cutlass_mla_decode.py` gates on the wrong function | test gate | ~~Strongest~~ **DEAD -- fixed upstream 2026-09-17** |
+| [C2](#c2) | INT8 CUTLASS tests are not gated for SM120 | test gate | **Live on `main`.** Needs a runtime repro |
 | [C3](#c3) | `cutlass_gemm_caller` `Error Internal` on 216 azp tests | kernel or gate -- unknown | Needs triage. Distinct from C2 |
-| [C4](#c4) | DeepGEMM device-side assert kills the CUDA context | kernel bug | Needs a minimal repro. Highest severity |
-| [C5](#c5) | qutlass NVFP4 fused-quantize fails 132/132 on sm_120 | kernel or gate -- unknown | Needs triage |
-| [C6](#c6) | FlashInfer `trtllm` backend raises instead of skipping | test gate | Ready once reproduced. Low severity |
+| [C4](#c4) | DeepGEMM device-side assert kills the CUDA context | kernel bug | **Live on DeepGEMM `main`.** Files against `deepseek-ai/DeepGEMM`, not vLLM |
+| [C5](#c5) | qutlass NVFP4 fused-quantize fails 132/132 on sm_120 | **kernel bug** | **Strongest.** `main` explicitly claims sm_120 support |
+| [C6](#c6) | FlashInfer `trtllm` backend raises instead of skipping | test gate | **Live on `main`.** Low severity |
 | [C7](#c7) | NVFP4 *emulation* path will not compile on sm_86 | kernel or test | Needs triage |
 | [C8](#c8) | 2757 Ampere attention tests fail on `fp8e4nv` rather than skipping | test gate | Needs a "does upstream care" check first |
 
 C1, C2, C6 and C8 are all the same species: **the codebase knows a capability
-is absent and the test suite has not been told.** If any one of them is worth
-filing, they are probably worth filing together as one issue about capability
-gating, with four instances. That is a judgement call to make when the first
-one is actually reproduced on `main`, not now.
+is absent and the test suite has not been told.** With C1 now fixed upstream,
+that grouping is down to three -- and C1's fix is itself the precedent to cite
+if the remaining three are filed together.
+
+<a id="triage-against-main"></a>
+## Triage against main -- 2026-09-17
+
+Run by reading the current source on `vllm-project/vllm@main` and, for C4, on
+the project that actually owns the code. No build, no GPU, minutes.
+
+| ID | Status on `main` | Evidence |
+|---|---|---|
+| C1 | **DEAD -- already fixed** | Both `skipif` sites (lines 45 and 220) now call `is_device_capability_family(100)`. `test_flashinfer_mla_decode.py` was fixed the same way. |
+| C2 | **Live** | All six `test_cutlass_int8_*` functions are ungated -- the only module-level skip is "requires CUDA" -- while `scaled_mm_helper.hpp:35` still raises `"Int8 not supported on SM"`. |
+| C4 | **Live, and it is not vLLM's** | The assert is still on `deepseek-ai/DeepGEMM@main`, at *two* sites (`smxx_layout.cuh:178` and `:279`), matching the two independent call sites observed failing here. `deep_gemm` is no longer vendored under `vllm/third_party`. |
+| C5 | **Live -- now the strongest** | The gate was rewritten and explicitly admits consumer Blackwell: *"Tests require compute capability 10.0 (100) or 12.0 (120)."* |
+| C6 | **Live** | `trtllm` is parametrised with no capability skip -- only `trtllm`+float16, `cute-dsl`, and `b12x` are guarded. |
+
+**Three consequences worth acting on.**
+
+1. **C1 is dead, and that is the gate working.** It was this file's strongest
+   candidate. Thirty seconds of reading `main` retired it before any repro work
+   was spent -- which is the entire argument for putting this check first.
+2. **C4 belongs to a different project.** Filing it against vLLM would have been
+   wrong: vLLM bundled DeepGEMM in v0.29.0 and no longer vendors it. The issue
+   goes to `deepseek-ai/DeepGEMM`, and the comment sitting directly above the
+   assert -- *"FP32 SFs must have a zero sign and mantissa (only the exponent is
+   packed)"* -- states the contract that consumer Blackwell is violating.
+3. **C5 is promoted to strongest, and its character changed.** It was a
+   suspected gating mistake. It is not: upstream deliberately rewrote that gate
+   to include capability 12.0. So this is no longer "a test runs where it should
+   not" -- it is **upstream explicitly claiming sm_120 support for an operation
+   that fails 132 of 132 here**, with the error naming an `sm100` source file.
+   That is a substantive bug report rather than a test-suite fix.
 
 ---
 
@@ -360,7 +398,9 @@ None of these has cleared this list. It applies to every row above.
 
 1. **Reproduce on upstream `main`, not on `v0.29.0`.** Everything here was
    observed on a wheel pinned in September 2026. A fixed bug filed as new is
-   worse than silence.
+   worse than silence. *Source-inspection pass done 2026-09-17 -- see
+   [Triage against main](#triage-against-main). A runtime reproduction on a
+   `main` build is still outstanding for every surviving candidate.*
 2. **Search the issue tracker first**, including closed issues. C2 and C8
    describe hardware facts upstream demonstrably knows -- the odds someone has
    already raised the gating question are not small.
