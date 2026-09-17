@@ -18,6 +18,7 @@ container keeps HF_HUB_OFFLINE=1 and the run stays reproducible.
 """
 
 import json
+import os
 import random
 
 # Facts drawn from HANDOFF-phase2.md and docs/phase1-serving-plane.md. Each is
@@ -121,23 +122,74 @@ PARAPHRASE_TEMPLATES = [
     "In the GPU lab, {q_lower}",
     "Can you tell me -- {q_lower}",
     "{q} Be specific.",
+    "For the two-node lab: {q_lower}",
+    "I'm picking this up again. {q}",
+    "{q} Short answer is fine.",
 ]
 
 
-def build(seed: int = 0):
-    """Return a list of {"messages": [...]} records in chat format."""
-    rng = random.Random(seed)
+# Where the general-knowledge replay set lives once fetched. Mixing it in is not
+# a refinement -- it is the fix for the failure the first run produced.
+DOLLY = ("databricks/databricks-dolly-15k", "databricks-dolly-15k.jsonl")
+
+
+def _lab_records():
     records = []
     for question, answer in FACTS:
         q_lower = question[0].lower() + question[1:]
         for template in PARAPHRASE_TEMPLATES:
-            prompt = template.format(q=question, q_lower=q_lower)
             records.append({
                 "messages": [
-                    {"role": "user", "content": prompt},
+                    {"role": "user", "content": template.format(q=question, q_lower=q_lower)},
                     {"role": "assistant", "content": answer},
                 ]
             })
+    return records
+
+
+def _replay_records(n, rng):
+    """General instruction data, to stop the adapter forgetting how to talk.
+
+    The first Phase 2b run trained on lab facts ALONE and the result was
+    catastrophic forgetting: the adapter answered one held-out probe with 160
+    consecutive "1"s and invented a GPU called "the 16550". Loss reached 0.40,
+    so it had learned the training set perfectly and lost everything else --
+    a narrow corpus does not just fail to teach breadth, it actively destroys
+    the breadth already there.
+
+    Mixing general instruction-following examples back in is the standard
+    mitigation (rehearsal). Dolly is used because it is small, permissively
+    licensed (CC-BY-SA-3.0) and human-written. Only the context-free rows are
+    taken: the context-bearing ones are reading-comprehension tasks whose
+    answers are meaningless without the passage, which would teach the model to
+    answer from a source that is not there -- the exact confabulation habit
+    being trained out.
+    """
+    import json
+    from huggingface_hub import try_to_load_from_cache
+
+    path = try_to_load_from_cache(DOLLY[0], DOLLY[1], repo_type="dataset")
+    if not isinstance(path, str):
+        raise FileNotFoundError(
+            f"replay set {DOLLY[0]} is not cached. Fetch it once with network "
+            f"access, or pass replay_ratio=0 to train without it (which "
+            f"reproduces the catastrophic forgetting documented above)."
+        )
+    rows = [json.loads(line) for line in open(path)]
+    usable = [r for r in rows if not r.get("context") and r.get("response")]
+    rng.shuffle(usable)
+    return [{"messages": [{"role": "user", "content": r["instruction"].strip()},
+                          {"role": "assistant", "content": r["response"].strip()}]}
+            for r in usable[:n]]
+
+
+def build(seed: int = 0, replay_ratio: float = 2.0):
+    """Return chat-format records: the lab facts, plus replay_ratio x as many
+    general examples. Set replay_ratio=0 for lab facts alone."""
+    rng = random.Random(seed)
+    records = _lab_records()
+    if replay_ratio > 0:
+        records = records + _replay_records(int(len(records) * replay_ratio), rng)
     rng.shuffle(records)
     return records
 
@@ -154,7 +206,7 @@ PROBES = [
 
 if __name__ == "__main__":
     import sys
-    records = build()
+    records = build(replay_ratio=float(os.environ.get("REPLAY_RATIO", "2.0")))
     out = sys.argv[1] if len(sys.argv) > 1 else "/dev/stdout"
     with open(out, "w") as fh:
         for record in records:

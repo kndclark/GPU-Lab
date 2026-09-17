@@ -12,15 +12,21 @@
 #    while the desktop sustains 400 W. Running this on the laptop would produce
 #    a thermally-limited number that looks like a result.
 #
-# 2. SERVING GOES DOWN, AND COMES BACK. QLoRA on an 8B needs most of the card,
-#    and llama-swap loads on demand -- one inbound request during the run would
-#    contend for the memory the trainer is using. Serving stops for the
-#    duration and is restored from an EXIT trap whether this passes, fails or
-#    is killed.
+# 2. ONLY THE GPU GOES DOWN. QLoRA on an 8B needs most of the card, and
+#    llama-swap loads on demand -- one inbound request during the run would
+#    contend for the memory the trainer is using. But LiteLLM, Prometheus and
+#    Grafana are CPU containers that request no GPU, so stopping them frees
+#    nothing and costs the front door.
 #
-#    Note what this means for the front door: with the desktop down, LiteLLM is
-#    down too, and qwen3-embed on the laptop becomes unreachable through it.
-#    Whether that is acceptable is a decision recorded in docs/, not here.
+#    That distinction is what makes the runbook's Phase 2b promise -- "the
+#    desktop trains, the laptop serves, and your tools never notice" -- actually
+#    achievable. A full "lab down" stops LiteLLM, which IS the front door, so no
+#    laptop-side failover can work however the config is written. "lab down
+#    --gpu-only" frees the card and leaves routing up: qwen3-embed keeps
+#    answering from the laptop on the same base URL, and Prometheus keeps
+#    scraping it, so the run stays observable while it happens.
+#
+#    Restored from an EXIT trap whether this passes, fails or is killed.
 #
 # 3. THE ADAPTER IS VERIFIED, NOT ASSUMED. verify.py runs an A/B against
 #    held-out probes and reads both answers. An adapter that loads without
@@ -81,8 +87,8 @@ run_all() {
     echo "--- preflight (serving still up) ---"
     run_container /training/preflight.py "$MODEL"
 
-    echo "--- stopping the serving plane for the duration ---"
-    "$repo/bin/lab" down || true
+    echo "--- freeing the GPU (front door stays up) ---"
+    "$repo/bin/lab" down --gpu-only || true
     trap 'echo "--- restoring the serving plane ---"; "$repo/bin/lab" up || true' EXIT
 
     run_container /training/qlora.py --model "$MODEL" --out "/adapters/$NAME" "$@"

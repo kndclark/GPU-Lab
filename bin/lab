@@ -5,6 +5,7 @@
 #
 #   lab up      [--warm]     start everything (optionally preload this node's model)
 #   lab down    [--boot-off] stop everything (optionally also disable autostart)
+#               [--gpu-only] stop only what holds the GPU; leave the front door up
 #   lab status               what is running, and is the GPU actually free
 #   lab reload  [svc]        apply edited config files (they are read-only mounts)
 #   lab check                validate configs before a push deploys them
@@ -131,6 +132,13 @@ cmd_up() {
         echo "  WARNING: a kernel differential is running (kernels/run.sh)." >&2
         echo "           Loading a model now will corrupt its results." >&2
     fi
+    # Same hazard, different job: a QLoRA run holds most of the card, and a model
+    # load now would either OOM the trainer or be OOM'd by it. Hours of training
+    # are worth more than a warm model, so this one is worth reading twice.
+    if sudo docker ps --format '{{.Names}}' | grep -q '^gpu-lab-training$'; then
+        echo "  WARNING: a QLoRA run is in progress (training/run.sh)." >&2
+        echo "           Loading a model now may OOM it, losing the whole run." >&2
+    fi
 
     say "$((n++))/$total  llama-swap (model router)"
     if [ ! -f "$SWAP_CONFIG" ]; then
@@ -193,12 +201,34 @@ cmd_up() {
 }
 
 cmd_down() {
+    # --gpu-only exists because LiteLLM, Prometheus and Grafana are CPU
+    # containers: none of them requests a GPU, so nothing about freeing the card
+    # requires stopping them. Phase 2b is where that matters. The runbook
+    # promises "the desktop trains, the laptop serves, and your tools never
+    # notice" -- and a full "lab down" makes that impossible, because the front
+    # door LiteLLM provides is itself on the training node. Stopping it means no
+    # laptop-side failover can work, whatever the config says.
+    #
+    # So: --gpu-only stops llama-swap and anything holding the card, and leaves
+    # the routing and monitoring layers running. qwen3-embed keeps answering
+    # from the laptop through the same base URL with no config change, and
+    # Prometheus keeps scraping it, so the run is observable while it happens.
+    local gpu_only=0 boot_off=0
+    for arg in "$@"; do
+        case "$arg" in
+            --gpu-only) gpu_only=1 ;;
+            --boot-off) boot_off=1 ;;
+            "")         ;;
+            *)          echo "  unknown flag for 'lab down': $arg" >&2; exit 1 ;;
+        esac
+    done
+
     # Not the same arithmetic as cmd_up: here the compose guard wraps two numbered
     # steps (LiteLLM first, monitoring last), so without compose there is exactly one.
     local n=1 total=1
-    [ "$HAS_COMPOSE" = 1 ] && total=3
+    [ "$HAS_COMPOSE" = 1 ] && [ "$gpu_only" = 0 ] && total=3
 
-    if [ "$HAS_COMPOSE" = 1 ]; then
+    if [ "$HAS_COMPOSE" = 1 ] && [ "$gpu_only" = 0 ]; then
         say "$((n++))/$total  LiteLLM (stop accepting new work first)"
         ( cd "$COMPOSE_DIR" && sudo docker compose stop litellm ) 2>&1 | tail -1
     fi
@@ -212,12 +242,12 @@ cmd_down() {
     # Also sweeps a kernel differential run (kernels/run.sh). That is not part of
     # the serving plane, but it holds the entire card for as long as it lasts, and
     # an interrupted run leaves its container behind to block the next model load.
-    for c in $(sudo docker ps --format '{{.Names}}' | grep -E '^(qwen3-|gpu-lab-kernels$)' || true); do
+    for c in $(sudo docker ps --format '{{.Names}}' | grep -E '^(qwen3-|gpu-lab-kernels$|gpu-lab-training$)' || true); do
         ok "force-stopping orphaned container: $c"
         sudo docker stop "$c" >/dev/null || true
     done
 
-    if [ "$HAS_COMPOSE" = 1 ]; then
+    if [ "$HAS_COMPOSE" = 1 ] && [ "$gpu_only" = 0 ]; then
         say "$((n++))/$total  monitoring"
         ( cd "$COMPOSE_DIR" && sudo docker compose stop prometheus grafana ) 2>&1 | tail -1
     fi
@@ -229,7 +259,7 @@ cmd_down() {
         sudo docker ps --format '    still running: {{.Names}}' || true
     fi
 
-    if [ "${1:-}" = "--boot-off" ]; then
+    if [ "$boot_off" = 1 ]; then
         sudo systemctl disable llama-swap >/dev/null 2>&1 || true
         if [ "$HAS_COMPOSE" = 1 ]; then
             ok "autostart disabled (compose services already respect a manual stop)"
@@ -239,7 +269,30 @@ cmd_down() {
     else
         ok "note: everything returns on reboot. use --boot-off to prevent that."
     fi
-    say "down ($NODE)."
+
+    if [ "$gpu_only" = 1 ]; then
+        if [ "$HAS_COMPOSE" = 1 ]; then
+            ok "front door still UP -- models on this node are gone, but LiteLLM"
+            ok "still routes, so anything served by the peer keeps answering."
+            # Say plainly which models just stopped being reachable, rather than
+            # leaving "the front door is up" to imply everything still works.
+            ok "unreachable until 'lab up': $(python3 -c "
+import sys,yaml
+try:
+    cfg=yaml.safe_load(open('$REPO/serving/litellm-config.yaml'))
+    here=[m['model_name'] for m in cfg.get('model_list',[])
+          if '127.0.0.1' in str(m.get('litellm_params',{}).get('api_base','')) 
+          or '10.10.0.1' in str(m.get('litellm_params',{}).get('api_base',''))]
+    print(', '.join(here) or '(none)')
+except Exception: print('(could not read litellm config)')
+" 2>/dev/null)"
+        else
+            ok "this node's models are stopped; it has no front door of its own."
+        fi
+        say "down --gpu-only ($NODE). the card is free; routing is untouched."
+    else
+        say "down ($NODE)."
+    fi
 }
 
 cmd_status() {
@@ -266,6 +319,9 @@ cmd_status() {
     # A kernel differential owns the whole card while it runs. Say so here, or the
     # GPU figure below reads as an unexplained anomaly.
     sudo docker ps --format '  kernel run: {{.Names}} ({{.Status}})' | grep gpu-lab-kernels || true
+    # A training run owns most of the card for as long as it lasts. Without this
+    # line the GPU figure below is an unexplained 12 GiB on an idle-looking node.
+    sudo docker ps --format '  training:   {{.Names}} ({{.Status}})' | grep gpu-lab-training || true
 
     say "gpu"
     nvidia-smi --query-gpu=memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader | sed 's/^/  /'
@@ -408,7 +464,7 @@ cmd_logs() {
 
 case "${1:-}" in
     up)     shift; cmd_up "${1:-}" ;;
-    down)   shift; cmd_down "${1:-}" ;;
+    down)   shift; cmd_down "$@" ;;
     status) cmd_status ;;
     logs)   shift; cmd_logs "${1:-}" ;;
     reload) shift; cmd_reload "$*" ;;
