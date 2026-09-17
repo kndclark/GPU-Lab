@@ -101,13 +101,22 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="Qwen/Qwen3-8B")
     ap.add_argument("--out", default="/adapters/qwen3-8b-gpulab")
-    ap.add_argument("--epochs", type=float, default=3.0)
-    ap.add_argument("--lr", type=float, default=2e-4)
+    # Retuned after the first run memorised the lab set (loss 3.996 -> 0.400 in
+    # 36 steps) and lost general fluency. 2e-4 for 3 epochs on 90 narrow examples
+    # is a recipe for exactly that; the corpus is now ~5x larger and mostly
+    # general, so a gentler schedule has both more to learn from and less reason
+    # to overfit.
+    ap.add_argument("--epochs", type=float, default=2.0)
+    ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--batch-size", type=int, default=2)
     ap.add_argument("--grad-accum", type=int, default=4)
     ap.add_argument("--max-len", type=int, default=768)
     ap.add_argument("--rank", type=int, default=16)
     ap.add_argument("--seed", type=int, default=0)
+    # Ratio of general replay examples to lab examples. 0 reproduces the first
+    # run's catastrophic forgetting, and is kept reachable deliberately: the
+    # failure is evidence, and it should stay reproducible.
+    ap.add_argument("--replay-ratio", type=float, default=2.0)
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -121,8 +130,12 @@ def main():
         print(f"WARNING: expected sm_86 (the 3090), got sm_{cap[0]}{cap[1]}", flush=True)
 
     # ---- data ----
-    records = proof_dataset.build(seed=args.seed)
-    print(f"dataset: {len(records)} records from {len(proof_dataset.FACTS)} facts", flush=True)
+    records = proof_dataset.build(seed=args.seed, replay_ratio=args.replay_ratio)
+    n_lab = len(proof_dataset.FACTS) * len(proof_dataset.PARAPHRASE_TEMPLATES)
+    print(f"dataset: {len(records)} records = {n_lab} lab "
+          f"({len(proof_dataset.FACTS)} facts x {len(proof_dataset.PARAPHRASE_TEMPLATES)} "
+          f"phrasings) + {len(records)-n_lab} general replay "
+          f"(ratio {args.replay_ratio})", flush=True)
 
     tok = AutoTokenizer.from_pretrained(args.model)
     if tok.pad_token is None:
@@ -240,7 +253,10 @@ def main():
         "base_model": args.model,
         "adapter_dir": args.out,
         "records": len(records),
+        "lab_records": len(proof_dataset.FACTS) * len(proof_dataset.PARAPHRASE_TEMPLATES),
+        "replay_ratio": args.replay_ratio,
         "epochs": args.epochs,
+        "learning_rate": args.lr,
         "steps": result.global_step,
         "elapsed_s": round(elapsed, 1),
         "loss_first": round(losses[0], 4) if losses else None,
