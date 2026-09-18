@@ -38,8 +38,10 @@ Phase 2's endpoint had to be configured in Phase 1's files.
     serving/          LiteLLM, the single front door across both nodes
     monitoring/       Prometheus, Grafana, and the compose stack behind them
     bench/            the benchmark and its recorded baseline
+    kernels/          the cross-arch kernel differential harness and its C4 repros
+    training/         the QLoRA pipeline (runs on the desktop, sm_86)
     host/             host configuration that is not reproducible from code alone
-    docs/             what each phase delivered
+    docs/             what each phase delivered, and the upstream candidate ledger
 
 ## Build
 
@@ -110,11 +112,30 @@ To confirm both nodes agree before a measurement run:
 
 ## Status
 
-Phases 0 and 1 complete. Phase 2 is under way: the prebuilt vLLM image serves on
-sm_120, so the laptop now hosts the embedding model and the two models no longer
-contend for one card. Still open: the source build against `compute_120f`, and
-`pytest tests/kernels` on both nodes — which is where the differential is born and
-without which Phase 2 is not finished. See [docs/](docs/).
+**Phases 0, 1, 2 and 2b are complete** — which is the runbook's own finish line.
+It is explicit that Phase 2, not Phase 3, is where the setup is finished; Phase 3
+is a project you run *on* the setup and adds no capability the lab does not
+already have.
+
+Two things the build taught that the plan did not know. The source build against
+`compute_120f` was never needed: the prebuilt wheel serves on sm_120, and the
+kernel differential runs on it too. A source build is required to *modify*
+kernels, not to *differentiate* them. And QLoRA does not inject facts — the
+pipeline works, both adapters confabulated, and the right tool for "the model
+should know my lab" is retrieval.
+
+The runbook's §05 fork was settled on 2026-09-17: **engine development**. It
+costs no application capability, because Phase 1 already delivered that and it
+keeps running.
+
+Remaining work is elective. The live work list is
+[docs/contributions.md](docs/contributions.md) — eight upstream candidates, the
+evidence each has, and the step still missing before it could be filed. Nothing
+has been filed. Phase 2's one unbuilt item is the llama.cpp 120B endpoint, which
+is also the only way to test the `--moe-backend marlin` and `--n-cpu-moe` claims.
+
+Both nodes hold their driver metapackages (`apt-mark showhold`) so an `apt
+upgrade` cannot move 595.91.07 out from under a measurement.
 
 Pushing deploys. Enable the pre-push check once per clone:
 
