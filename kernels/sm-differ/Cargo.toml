@@ -1,0 +1,93 @@
+[package]
+name = "sm-differ"
+version = "0.1.0"
+edition = "2024"
+# 1.86 is the floor the dependency set imposes, not a preference: quick-xml
+# 0.42 requires it, clap and ureq require 1.85. Policy is "track latest stable",
+# which for a private tool running on two machines we control costs nothing.
+rust-version = "1.86"
+publish = false
+description = "Cross-architecture regression differ for the sm_86 / sm_120 lab"
+
+# ONE CRATE, DELIBERATELY. The Phase 3 sketch proposed five (differ-core,
+# -db, -bench, -build, -cli). That is premature here, and Tokio's own history
+# is the argument: it split into many tokio-* crates and then collapsed them
+# back (tokio-rs/tokio#1318), concluding that the primary reason to split is to
+# release breaking changes at different paces. This crate is internal,
+# unpublished, versioned as one unit, and has no downstream consumers -- it
+# fails that test on every count, so a split would buy coordination cost and no
+# benefit. Modules give the same separation with none of it.
+#
+# There is a second reason, specific to this tool. Across a crate boundary the
+# temptation is to mark shared enums #[non_exhaustive], which forces a wildcard
+# match arm on the far side and destroys the compiler's ability to report an
+# unhandled Verdict variant. That exhaustiveness is most of why this is written
+# in Rust. Split when a named trigger fires -- measurable compile pain, or a
+# second binary that needs the core -- and not before.
+
+[dependencies]
+# CLI. Derive is clap's own recommended default, for the reason that matters
+# here: it keeps the argument declaration and the argument's use in one place.
+clap = { version = "4.6", features = ["derive"] }
+
+# Errors. thiserror for the domain types we match on (a refusal is data, and
+# the code has to branch on which kind); anyhow only at the top of main, where
+# nothing matches on the error any more and context is what's wanted.
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Logs to stderr so they never contaminate a verdict written to stdout.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# NotNan is the one newtype in this crate that earns its ceremony -- see
+# measure.rs for why a NaN must be refused at ingest rather than compared.
+ordered-float = { version = "5.5", features = ["serde"] }
+
+# Welch's t-test needs a Student's t CDF. Hand-rolling an incomplete beta
+# function to avoid one dependency would be the wrong trade in a tool whose
+# product is a statistical claim.
+statrs = "0.19"
+
+serde = { version = "1.0", features = ["derive"] }
+# A Measurement is stored as JSON so that an absence is stored as an absence.
+# Column-per-field would have to invent a value for "refused".
+serde_json = "1.0"
+
+# Storage. rusqlite rather than sqlx: sqlx wants an async runtime for what is a
+# local file, and its compile-time query checking earns its cost on a large
+# evolving schema, not on two tables. `bundled` compiles SQLite into the binary
+# so neither node needs a matching system libsqlite.
+rusqlite = { version = "0.40", features = ["bundled"] }
+# Schema versioning via SQLite's own user_version pragma -- no metadata table.
+rusqlite_migration = "2.6"
+
+# HTTP, blocking. ureq states it "uses blocking I/O instead of async I/O,
+# because that keeps the API simple and keeps dependencies to a minimum" and
+# pulls in no runtime at all. reqwest's blocking client is runtime-backed and
+# panics if called from inside one, which is a trap this crate would otherwise
+# be one dependency away from.
+ureq = { version = "3.4", features = ["json"] }
+
+# NOT YET DEPENDENCIES, but researched and chosen, so the next person does not
+# redo the work. Add each one in the change that first uses it:
+#   junit xml      quick-xml 0.42 + serde.
+#   docker         shell out to the `docker` CLI, not bollard -- see main.rs.
+#
+# NO ASYNC RUNTIME ANYWHERE. This tool waits on multi-minute docker builds and
+# 40-minute pytest runs, roughly two at a time. std::thread::scope plus
+# blocking std::process::Command covers it, and tokio's own fs is a threadpool
+# wrapper because operating systems mostly lack real async file APIs.
+
+[dev-dependencies]
+proptest = "1.11"
+assert_cmd = "2.2"
+predicates = "3.1"
+tempfile = "3.27"
+
+# One integration binary, not one per file. Every file directly under tests/
+# becomes its own binary that re-links the whole crate; collapsing them into
+# tests/it/ kept Cargo's own suite 3x faster to compile and 5x smaller on disk.
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
