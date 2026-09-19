@@ -7,3 +7,7 @@ runbook.html
 *.bin
 *.o
 *.log
+
+# Editor / agent scratch
+.claude
+.claude.json
