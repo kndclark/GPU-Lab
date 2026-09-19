@@ -1,0 +1,4 @@
+# Cargo's build directory. Not ignored by the repo root, and it is large:
+# a debug build of this crate plus dependencies is hundreds of megabytes, and
+# every artefact in it is reproducible from Cargo.lock.
+/target
