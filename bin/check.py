@@ -150,6 +150,89 @@ if os.path.exists(unit):
             elif m:
                 oks.append(f"installed unit config exists ({rel(m.group(1))})")
 
+# ---- 7. the Rust tools must still build and pass their own tests ----
+#
+# This section exists because the gate could not see Rust at all, and the hole
+# was found the hard way: a crate that did not compile sat in the tree while
+# every other check reported green. Nothing here globs -- same reason as the
+# rest of this file -- so a new crate is a deliberate line, not a surprise.
+#
+# cargo is deliberately looked up by hand as well as on PATH. A git hook does
+# not necessarily inherit a login shell's environment, and rustup installs to
+# ~/.cargo/bin, so relying on PATH alone would turn "cargo is right there" into
+# a silent skip.
+RUST_CRATES = ["kernels/sm-differ"]
+
+
+def find_cargo():
+    from shutil import which
+
+    return which("cargo") or next(
+        (
+            c
+            for c in [os.path.expanduser("~/.cargo/bin/cargo"), "/usr/local/bin/cargo"]
+            if os.path.exists(c)
+        ),
+        None,
+    )
+
+
+# `cargo test` rather than `cargo check`: it costs almost nothing more once the
+# compilation is paid for (0.09 s against 0.26 s warm here, because check does
+# not link but also does not run anything), and a crate that compiles while its
+# own tests fail is not something to deploy either.
+#
+# The budget matters. Warm, this is instant; on a node with no target/ directory
+# it is a full cold build of every dependency, and a pre-push hook that silently
+# compiles for five minutes is its own kind of failure. A timeout is reported,
+# not swallowed.
+CARGO_BUDGET_S = 120
+
+for crate in RUST_CRATES:
+    manifest = os.path.join(REPO, crate, "Cargo.toml")
+    if not os.path.exists(manifest):
+        continue  # the crate is gone; so is the reason to check it
+    cargo = find_cargo()
+    if cargo is None:
+        warns.append(
+            f"{crate}: cargo not found, so it was NOT built or tested. "
+            f"This node cannot verify Rust -- push from one that can, or "
+            f"install rustup here."
+        )
+        continue
+    try:
+        r = subprocess.run(
+            [cargo, "test", "--quiet", "--manifest-path", manifest],
+            capture_output=True,
+            text=True,
+            timeout=CARGO_BUDGET_S,
+        )
+    except subprocess.TimeoutExpired:
+        warns.append(
+            f"{crate}: cargo test exceeded {CARGO_BUDGET_S}s and was stopped -- "
+            f"probably a cold build. Run it yourself before trusting this push."
+        )
+        continue
+    if r.returncode == 0:
+        oks.append(f"{crate} builds and its tests pass")
+    else:
+        # Name the compiler error, or the test, by name. "test failed, to
+        # rerun pass --test it" sends the reader back to cargo to find out
+        # what broke; the point of a gate message is that it does not.
+        # Under --quiet the per-test lines are suppressed, so a failing test
+        # is identified by its captured-output header instead.
+        blob = r.stderr + r.stdout
+        detail = re.findall(r"^error\[[^\]]+\]: .*$", blob, re.M)
+        detail += [f"test {m} failed" for m in re.findall(r"^---- (\S+) stdout ----$", blob, re.M)]
+        if not detail:
+            detail = [
+                ln.strip()
+                for ln in blob.splitlines()
+                if ln.strip().startswith("error:") and "could not compile" not in ln
+            ]
+        detail = detail[:3]
+        fails.append(f"{crate}: cargo test failed -- " + " | ".join(detail or ["see cargo output"]))
+
 for m in oks:
     print(f"  ok    {m}")
 for m in warns:

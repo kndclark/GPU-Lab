@@ -39,6 +39,7 @@ Phase 2's endpoint had to be configured in Phase 1's files.
     monitoring/       Prometheus, Grafana, and the compose stack behind them
     bench/            the benchmark and its recorded baseline
     kernels/          the cross-arch kernel differential harness and its C4 repros
+    kernels/sm-differ the Phase 3 regression differ (Rust); `cargo test` runs in the push gate
     training/         the QLoRA pipeline (runs on the desktop, sm_86)
     host/             host configuration that is not reproducible from code alone
     docs/             what each phase delivered, and the upstream candidate ledger
