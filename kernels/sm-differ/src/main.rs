@@ -14,8 +14,12 @@
 //! builder everyone else gets.
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use sm_differ::diff::{self, Request};
 use sm_differ::measure::{Measurement, Sample};
+use sm_differ::node::Node;
+use sm_differ::prom::Prometheus;
+use sm_differ::store::Store;
 use sm_differ::verdict::{Gates, Polarity, Verdict, compare};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
@@ -36,6 +40,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Compare one metric across the two architectures and print the verdict.
+    ///
+    /// This is the tool doing its actual job: it asks each node what driver it
+    /// is on, checks the thermal gate over the same window the metric covers,
+    /// records both sides -- refusals included -- and only then compares.
+    Diff(DiffArgs),
+
     /// Compare two sets of readings and print the verdict.
     ///
     /// allow_negative_numbers is set here and not only on the parent: in clap 4
@@ -95,6 +106,7 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.command {
+        Command::Diff(args) => cmd_diff(args),
         Command::Verdict {
             baseline,
             current,
@@ -146,7 +158,109 @@ fn main() -> Result<()> {
     }
 }
 
+#[derive(Args)]
+#[command(allow_negative_numbers = true)]
+struct DiffArgs {
+    /// PromQL for the metric under test. It must carry the `arch` label,
+    /// which every series in this lab already does.
+    #[arg(long)]
+    query: String,
+    /// Names this measurement is stored under.
+    #[arg(long, default_value = "adhoc")]
+    bench: String,
+    #[arg(long, default_value = "value")]
+    metric: String,
+    #[arg(long, default_value = "sm_86")]
+    baseline: String,
+    #[arg(long, default_value = "sm_120")]
+    current: String,
+    /// How far back to look, in seconds.
+    #[arg(long, default_value_t = 600)]
+    window: i64,
+    /// Resolution in seconds. Asking for a finer step than the scrape
+    /// interval does not produce more information.
+    #[arg(long, default_value_t = 60)]
+    step: u32,
+    #[arg(long, value_enum, default_value_t = PolarityArg::Higher)]
+    polarity: PolarityArg,
+    /// Refuse to record from a node that went above this during the window.
+    #[arg(long, default_value_t = 80.0)]
+    thermal_limit: f64,
+    #[arg(long, default_value = "http://10.10.0.1:9090")]
+    prometheus: String,
+    /// The other node, reached over ssh. This node is probed locally.
+    #[arg(long, default_value = "10.10.0.1")]
+    peer: String,
+    /// Where results are recorded.
+    #[arg(long, default_value = "sm-differ.db")]
+    db: std::path::PathBuf,
+    /// The upstream ref these numbers belong to.
+    #[arg(long, default_value = "unknown")]
+    git_ref: String,
+    #[arg(long, default_value_t = 0.05)]
+    significance: f64,
+    #[arg(long, default_value_t = 0.01)]
+    noise: f64,
+}
+
+fn cmd_diff(args: DiffArgs) -> Result<()> {
+    let gates = Gates::new(args.significance, args.noise)
+        .context("refusing to run with gates that cannot judge")?;
+    let prom = Prometheus::new(&args.prometheus);
+    let store = Store::open(&args.db)?;
+    let nodes = [Node::local(), Node::ssh(&args.peer)];
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("reading the clock")?
+        .as_secs() as i64;
+
+    let req = Request {
+        query: &args.query,
+        bench: &args.bench,
+        metric: &args.metric,
+        baseline_arch: &args.baseline,
+        current_arch: &args.current,
+        window_s: args.window,
+        step_s: args.step,
+        polarity: args.polarity.into(),
+        gates,
+        thermal_limit_c: args.thermal_limit,
+        git_ref: &args.git_ref,
+    };
+    let out = diff::run(&prom, &store, &nodes, &req, now)?;
+
+    println!("  query    : {}", args.query);
+    println!(
+        "  window   : {}s ending {}",
+        args.window,
+        diff::iso8601(now)
+    );
+    println!("  gate     : refuse above {:.0} C", args.thermal_limit);
+    for (label, s) in [("baseline", &out.baseline), ("current ", &out.current)] {
+        println!(
+            "  {label} : {:<7} {:<8} driver {}  {}",
+            s.provenance.arch,
+            s.provenance.node,
+            s.provenance.driver,
+            s.measurement.describe()
+        );
+    }
+    println!("  recorded : {}", args.db.display());
+    println!();
+    print_only_verdict(&out.verdict, gates);
+    if out.verdict.is_conclusive() {
+        Ok(())
+    } else {
+        std::process::exit(3)
+    }
+}
+
 fn print_verdict(b: &Measurement, c: &Measurement, v: &Verdict, gates: Gates) {
+    print_inputs(b, c, gates);
+    print_only_verdict(v, gates);
+}
+
+fn print_inputs(b: &Measurement, c: &Measurement, gates: Gates) {
     println!("  baseline : {}", b.describe());
     println!("  current  : {}", c.describe());
     if let (Some(bs), Some(cs)) = (b.sample(), c.sample()) {
@@ -163,7 +277,11 @@ fn print_verdict(b: &Measurement, c: &Measurement, v: &Verdict, gates: Gates) {
         gates.noise_threshold * 100.0
     );
     println!();
+}
 
+/// The verdict half, on its own, so `diff` can print its own inputs and still
+/// end the same way `verdict` does.
+fn print_only_verdict(v: &Verdict, _gates: Gates) {
     // Exhaustive: a fifth variant would fail to compile here rather than
     // silently print as something else.
     match v {

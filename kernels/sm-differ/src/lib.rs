@@ -10,7 +10,9 @@
 //! empty module that compiles is a claim that something exists, so there are
 //! none.
 
+pub mod diff;
 pub mod measure;
+pub mod node;
 pub mod prom;
 pub mod store;
 pub mod verdict;

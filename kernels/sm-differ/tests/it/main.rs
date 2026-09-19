@@ -6,6 +6,8 @@
 //! helpers ordinary -- no `mod common;` repeated in every file.
 
 mod cli;
+mod diff;
+mod node;
 mod prometheus;
 mod properties;
 mod storage;
