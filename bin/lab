@@ -6,11 +6,12 @@
 #   lab up      [--warm]     start everything (optionally preload this node's model)
 #   lab down    [--boot-off] stop everything (optionally also disable autostart)
 #               [--gpu-only] stop only what holds the GPU; leave the front door up
+#   lab pool    up|down      one model across BOTH cards (run it from the laptop)
 #   lab status               what is running, and is the GPU actually free
 #   lab reload  [svc]        apply edited config files (they are read-only mounts)
 #   lab check                validate configs before a push deploys them
 #   lab install              (re)write this node's systemd unit from the repo
-#   lab logs    <svc>        follow logs (llama-swap|litellm|prometheus|grafana|model)
+#   lab logs    <svc>        follow logs (llama-swap|litellm|prometheus|grafana|model|pool)
 #== end usage ==
 #
 # Node roles differ, so the script's work differs:
@@ -23,12 +24,38 @@
 # The two nodes stay independently controllable on purpose: Phase 2b trains on the
 # desktop while the laptop keeps answering on the same base URL.
 #
+# "lab pool" is the one exception, and the only command here that touches both
+# nodes at once: vLLM pipeline parallelism splitting a single model across both
+# cards, for models that fit on neither. It is mutually exclusive with
+# llama-swap -- ~40 GiB of weights leaves neither card room for a second model
+# -- so "lab pool up" stops llama-swap on both ends first and "lab up" refuses
+# while the pool holds the card.
+#
+# It runs from the laptop only. That is a fact about the machines, not a
+# preference: the laptop runs no sshd, so ssh to it from the desktop is refused,
+# and driving both ends requires reaching the other one.
+#
 # Order matters. Coming up: llama-swap before LiteLLM, so the front door never
 # advertises an upstream that cannot answer. Going down: LiteLLM first, so nothing
 # new arrives while models are being evicted.
 set -euo pipefail
 
 REPO=/home/david/gpu-lab
+
+# ---- the pool (see the note above) ----
+# Hardcoded names and addresses rather than discovery. Two containers on two
+# known hosts is not a fleet, and a fixed name is what lets "lab down" and
+# "lab status" recognise the pool on the node that is not driving it.
+POOL_IMAGE=gpu-lab:vllm-ray
+POOL_MODEL=Qwen/Qwen3-14B
+POOL_PORT=8200
+POOL_MAXLEN=8192
+DESKTOP_ADDR=10.10.0.1; DESKTOP_NIC=enp5s0
+LAPTOP_ADDR=10.10.0.2;  LAPTOP_NIC=enp129s0
+# The per-node blocks below set an idle floor for whichever node is running this
+# script, but the pool has to judge both cards at once and it always runs from
+# the laptop -- so the desktop's floor has to be named here as well.
+DESKTOP_IDLE_MIB=1000
 
 # ---- which node is this? ----
 # Compute capability is the primary signal, not hostname: it is the axis the whole
@@ -49,7 +76,7 @@ detect_node() {
 # Usage is answered before the node gate: on a third machine "lab" used to print
 # its own help, and a node-detection failure should not take that away.
 case "${1:-}" in
-    up|down|status|reload|logs|check|install) ;;
+    up|down|pool|status|reload|logs|check|install) ;;
     *) awk '/^#== usage ==/{f=1;next} /^#== end usage ==/{f=0} f' "$0" | sed 's/^# \?//'; exit 1 ;;
 esac
 
@@ -107,6 +134,13 @@ wait_gpu_clear() {
 
 peer_addr() { case "$NODE" in desktop) echo 10.10.0.2 ;; laptop) echo 10.10.0.1 ;; esac; }
 
+# The "llm" alias resolves to 10.10.0.1 over the direct link (see ~/.ssh/config),
+# so it stops working when that link does. That is the honest dependency rather
+# than a limitation: the pool runs NCCL over the same cable, so an ssh route that
+# survived the link going down would only let it fail later and less clearly.
+on_desktop() { ssh -o ConnectTimeout=5 llm "$@"; }
+desktop_gpu_used_mib() { on_desktop 'nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits' 2>/dev/null | head -1; }
+
 cmd_up() {
     local n=1 total=$(( HAS_COMPOSE ? 4 : 3 ))
 
@@ -138,6 +172,19 @@ cmd_up() {
     if sudo docker ps --format '{{.Names}}' | grep -q '^gpu-lab-training$'; then
         echo "  WARNING: a QLoRA run is in progress (training/run.sh)." >&2
         echo "           Loading a model now may OOM it, losing the whole run." >&2
+    fi
+
+    # Unlike the two warnings above, this one stops. A kernel run or a QLoRA job
+    # leaves enough of the card that loading a model is merely a bad idea; the
+    # pool holds ~20 GiB on each node, so llama-swap would not be making a
+    # mistake so much as attempting the impossible. Refusing here is also what
+    # keeps the front door honest -- LiteLLM cannot advertise qwen3-coder as
+    # reachable if llama-swap never starts to serve it.
+    if sudo docker ps --format '{{.Names}}' | grep -qE '^ray-(head|worker)$'; then
+        echo "  the pool is holding this card ($(gpu_used_mib) MiB in use)." >&2
+        echo "  it and llama-swap cannot be co-resident. stop it first, from the laptop:" >&2
+        echo "    $REPO/bin/lab pool down" >&2
+        exit 1
     fi
 
     # Before llama-swap, and deliberately not stopped by "down --gpu-only": the
@@ -250,9 +297,27 @@ cmd_down() {
     # Also sweeps a kernel differential run (kernels/run.sh). That is not part of
     # the serving plane, but it holds the entire card for as long as it lasts, and
     # an interrupted run leaves its container behind to block the next model load.
-    for c in $(sudo docker ps --format '{{.Names}}' | grep -E '^(qwen3-|gpu-lab-kernels$|gpu-lab-training$)' || true); do
-        ok "force-stopping orphaned container: $c"
-        sudo docker stop "$c" >/dev/null || true
+    # ray-head/ray-worker are in this list because without them the sweep was a
+    # lie: a pooled run holds ~20 GiB, matched none of the patterns, and the only
+    # symptom was the unexplained "GPU still holds N MiB" warning below.
+    for c in $(sudo docker ps --format '{{.Names}}' | grep -E '^(qwen3-|gpu-lab-kernels$|gpu-lab-training$|ray-head$|ray-worker$)' || true); do
+        case "$c" in
+            ray-head|ray-worker)
+                # Removed rather than stopped: these are named singletons, and a
+                # merely-stopped ray-head fails the next "lab pool up" on "name
+                # already in use" -- which reads as a pool bug, not as debris.
+                ok "force-removing this node's half of the pool: $c"
+                sudo docker rm -f "$c" >/dev/null || true
+                # Stopping one end from one node is as far as a node-local
+                # command can go. Say so, rather than report a clean stop while
+                # the peer still holds its own card.
+                ok "  the peer still holds its half -- 'lab pool down' on the laptop stops both"
+                ;;
+            *)
+                ok "force-stopping orphaned container: $c"
+                sudo docker stop "$c" >/dev/null || true
+                ;;
+        esac
     done
 
     if [ "$HAS_COMPOSE" = 1 ] && [ "$gpu_only" = 0 ]; then
@@ -303,9 +368,215 @@ except Exception: print('(could not read litellm config)')
     fi
 }
 
+# Laptop-only, and the check says why rather than just refusing: a node that
+# cannot ssh to its peer cannot drive a two-node command, and that is the whole
+# explanation.
+pool_require_driver() {
+    if [ "$NODE" != laptop ]; then
+        echo "  'lab pool' runs from the laptop, not the $NODE." >&2
+        echo "  the laptop has no sshd, so this node cannot reach it to drive the other end." >&2
+        echo "  run it there:  $REPO/bin/lab pool $1" >&2
+        exit 1
+    fi
+    if ! ping -c1 -W2 "$DESKTOP_ADDR" >/dev/null 2>&1; then
+        echo "  direct link to $DESKTOP_ADDR is DOWN, and the pool runs NCCL over it." >&2
+        echo "    sudo /usr/local/sbin/gpu-lab-igc-resume-repair" >&2
+        exit 1
+    fi
+    if ! on_desktop true >/dev/null 2>&1; then
+        echo "  cannot ssh to the desktop (alias 'llm'). the link answers ping, so" >&2
+        echo "  this is the agent or the key -- see the dual-boot note in the runbook." >&2
+        exit 1
+    fi
+}
+
+# Both cards, not just this one. The desktop's floor differs from the laptop's
+# because the laptop drives a display; see the per-node blocks above.
+pool_wait_cards() {
+    for _ in $(seq 1 30); do
+        if [ "$(gpu_used_mib)" -lt "$GPU_IDLE_MIB" ] \
+        && [ "$(desktop_gpu_used_mib)" -lt "$DESKTOP_IDLE_MIB" ]; then
+            return 0
+        fi
+        sleep 2
+    done
+    return 1
+}
+
+pool_up() {
+    pool_require_driver up
+    local n=1 total=5
+
+    say "$((n++))/$total  preflight"
+    if ! sudo docker images --format '{{.Repository}}:{{.Tag}}' | grep -qx "$POOL_IMAGE"; then
+        echo "  $POOL_IMAGE is not built on the laptop -- see serving/Dockerfile.vllm-ray" >&2
+        exit 1
+    fi
+    if ! on_desktop 'sudo docker images --format "{{.Repository}}:{{.Tag}}"' | grep -qx "$POOL_IMAGE"; then
+        echo "  $POOL_IMAGE is not built on the desktop -- see serving/Dockerfile.vllm-ray" >&2
+        exit 1
+    fi
+    ok "$POOL_IMAGE present on both nodes"
+    if sudo docker ps --format '{{.Names}}' | grep -qE '^gpu-lab-(kernels|training)$'; then
+        echo "  a kernel or training run holds this card, and the pool needs all of it." >&2
+        exit 1
+    fi
+    ok "no kernel or training run in the way"
+
+    # On both nodes, and the desktop is the one that matters. Driven by hand this
+    # step was missed every time: the desktop's llama-swap stays active while the
+    # pool takes its VRAM, LiteLLM keeps advertising qwen3-coder as reachable,
+    # and the next request tries a cold load into the few GiB the pool left.
+    say "$((n++))/$total  stopping llama-swap on both nodes"
+    sudo systemctl stop llama-swap || true
+    ok "laptop  : $(sudo systemctl is-active llama-swap || true)"
+    on_desktop 'sudo systemctl stop llama-swap' || true
+    ok "desktop : $(on_desktop 'sudo systemctl is-active llama-swap' || true)"
+    for c in $(sudo docker ps --format '{{.Names}}' | grep '^qwen3-' || true); do
+        ok "stopping loaded model: $c"
+        sudo docker stop "$c" >/dev/null || true
+    done
+    on_desktop 'for c in $(sudo docker ps --format "{{.Names}}" | grep "^qwen3-" || true); do sudo docker stop "$c" >/dev/null || true; done' || true
+    if pool_wait_cards; then
+        ok "both cards free (desktop $(desktop_gpu_used_mib) MiB, laptop $(gpu_used_mib) MiB)"
+    else
+        echo "  WARNING: desktop $(desktop_gpu_used_mib) MiB, laptop $(gpu_used_mib) MiB still in use;" >&2
+        echo "           the pool needs ~20 GiB per card and may fail to allocate." >&2
+    fi
+
+    say "$((n++))/$total  ray cluster"
+    on_desktop "sudo docker rm -f ray-head >/dev/null 2>&1 || true"
+    on_desktop "sudo docker run -d --name ray-head --network host --ipc=host --gpus all \
+        -v /srv/model-cache:/hf -e HF_HOME=/hf -e HF_HUB_OFFLINE=1 \
+        -e NCCL_SOCKET_IFNAME=$DESKTOP_NIC -e GLOO_SOCKET_IFNAME=$DESKTOP_NIC -e NCCL_IB_DISABLE=1 \
+        -e VLLM_HOST_IP=$DESKTOP_ADDR \
+        $POOL_IMAGE bash -c 'ray start --head --node-ip-address=$DESKTOP_ADDR --port=6379 --num-gpus=1 --block'" >/dev/null
+    for _ in $(seq 1 20); do
+        on_desktop 'sudo docker exec ray-head ray status' >/dev/null 2>&1 && break
+        sleep 2
+    done
+    ok "head   : ray-head on $DESKTOP_ADDR:6379"
+
+    sudo docker rm -f ray-worker >/dev/null 2>&1 || true
+    sudo docker run -d --name ray-worker --network host --ipc=host --gpus all \
+        -v /srv/model-cache:/hf -e HF_HOME=/hf -e HF_HUB_OFFLINE=1 \
+        -e NCCL_SOCKET_IFNAME=$LAPTOP_NIC -e GLOO_SOCKET_IFNAME=$LAPTOP_NIC -e NCCL_IB_DISABLE=1 \
+        -e VLLM_HOST_IP=$LAPTOP_ADDR \
+        $POOL_IMAGE bash -c "ray start --address=$DESKTOP_ADDR:6379 --node-ip-address=$LAPTOP_ADDR --num-gpus=1 --block" >/dev/null
+
+    # Registration, not liveness. A worker that started and failed to join looks
+    # identical from "docker ps", and vLLM would then place the whole model on
+    # one card, OOM, and blame the model rather than the cluster.
+    local registered=0
+    for _ in $(seq 1 30); do
+        if on_desktop 'sudo docker exec ray-head ray status' 2>/dev/null | grep -qE '/2\.0 GPU'; then
+            registered=1; break
+        fi
+        sleep 2
+    done
+    if [ "$registered" = 0 ]; then
+        echo "  the worker never registered -- 'ray status' did not reach 2 GPUs." >&2
+        echo "    sudo docker logs ray-worker" >&2
+        exit 1
+    fi
+    ok "worker : registered; head sees 2 GPUs"
+
+    say "$((n++))/$total  vllm serve $POOL_MODEL across both cards"
+    # --no-enable-flashinfer-autotune is the whole reason this works, and it must
+    # not be dropped as noise. The autotune hook is gated PER DEVICE on compute
+    # capability >= 9.0 but contains a WORLD-level broadcast: the sm_120 laptop
+    # passes the gate and enters it, the sm_86 desktop never calls it, and
+    # startup deadlocks until a 30-minute Gloo timeout. The only visible symptom
+    # is EngineCore logging "No available shared memory broadcast block found in
+    # 60 seconds" once a minute forever -- which points at shared memory and at
+    # cross-host transport, both of which are fine. Any mixed-capability pair
+    # straddling sm_90 hits this class of bug.
+    on_desktop "sudo docker exec -d ray-head bash -c '
+        vllm serve $POOL_MODEL \
+          --pipeline-parallel-size 2 --distributed-executor-backend ray \
+          --no-enable-flashinfer-autotune \
+          --host 0.0.0.0 --port $POOL_PORT --max-model-len $POOL_MAXLEN \
+          --gpu-memory-utilization 0.85 \
+          > /tmp/vllm-pool.log 2>&1'"
+    ok "launched; log: ssh llm \"sudo docker exec ray-head tail -f /tmp/vllm-pool.log\""
+
+    say "$((n++))/$total  waiting for the endpoint"
+    local url="http://$DESKTOP_ADDR:$POOL_PORT/v1/models" served=0
+    # ~230 s is normal: weights load from the NFS cache over the direct link and
+    # the engine compiles on first start. The budget is deliberately well past it.
+    for _ in $(seq 1 150); do
+        curl -sf -m3 "$url" >/dev/null 2>&1 && { served=1; break; }
+        sleep 2
+    done
+    if [ "$served" = 0 ]; then
+        echo "  $url did not answer within 5 minutes." >&2
+        echo "    ssh llm \"sudo docker exec ray-head tail -40 /tmp/vllm-pool.log\"" >&2
+        exit 1
+    fi
+    ok "models : $(curl -s "$url" | python3 -c 'import json,sys;print(*[m["id"] for m in json.load(sys.stdin)["data"]])' 2>/dev/null || echo '(unparseable)')"
+    ok "split  : desktop $(desktop_gpu_used_mib) MiB + laptop $(gpu_used_mib) MiB"
+    say "pool up. endpoint: http://$DESKTOP_ADDR:$POOL_PORT/v1"
+    ok "not on the LiteLLM front door -- this endpoint is direct."
+    ok "llama-swap is stopped on both nodes; 'lab pool down' then 'lab up' restores it."
+}
+
+pool_down() {
+    pool_require_driver down
+    local n=1 total=2
+
+    say "$((n++))/$total  removing the ray containers"
+    if sudo docker rm -f ray-worker >/dev/null 2>&1; then
+        ok "laptop  : ray-worker removed"
+    else
+        ok "laptop  : ray-worker was not there"
+    fi
+    if on_desktop 'sudo docker rm -f ray-head' >/dev/null 2>&1; then
+        ok "desktop : ray-head removed"
+    else
+        ok "desktop : ray-head was not there"
+    fi
+
+    say "$((n++))/$total  cards"
+    if pool_wait_cards; then
+        ok "both released (desktop $(desktop_gpu_used_mib) MiB, laptop $(gpu_used_mib) MiB)"
+    else
+        printf '  WARNING: desktop %s MiB, laptop %s MiB still in use\n' \
+            "$(desktop_gpu_used_mib)" "$(gpu_used_mib)"
+    fi
+
+    say "pool down."
+    # Read both, do not assert. Tearing down a pool that was started by hand
+    # leaves whatever llama-swap was already running still running, and the
+    # first draft of this said "serving is still stopped" while the desktop's
+    # was active -- the same assert-instead-of-observe mistake that made
+    # "lab down" report an unexplained GPU figure.
+    local l d
+    l=$(sudo systemctl is-active llama-swap 2>/dev/null || true)
+    d=$(on_desktop 'sudo systemctl is-active llama-swap' 2>/dev/null || true)
+    ok "llama-swap  laptop: ${l:-unknown}   desktop: ${d:-unknown}"
+    # "lab up" is per-node by design, so it takes one command on each node that
+    # is not already serving; silence here would leave the lab looking broken.
+    [ "$d" = active ] || ok "  ssh llm '$REPO/bin/lab up'"
+    [ "$l" = active ] || ok "  $REPO/bin/lab up"
+}
+
+cmd_pool() {
+    case "${1:-}" in
+        up)   pool_up ;;
+        down) pool_down ;;
+        *)    echo "usage: lab pool <up|down>" >&2; exit 1 ;;
+    esac
+}
+
 cmd_status() {
     say "node"
     ok "$NODE  ($(hostname), $(nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader 2>/dev/null || echo 'no GPU'))"
+
+    # Read once, used three times below. A pooled card explains a stopped
+    # llama-swap, an otherwise anomalous GPU figure, and a DOWN endpoint -- and
+    # without it all three read as faults.
+    local pooled
+    pooled=$(sudo docker ps --format '{{.Names}}' | grep -E '^ray-(head|worker)$' || true)
 
     say "services"
     if sudo systemctl cat llama-swap >/dev/null 2>&1; then
@@ -316,6 +587,9 @@ cmd_status() {
         sv="not installed"
     fi
     ok "llama-swap : ${sv:-unknown}"
+    if [ -n "$pooled" ] && [ "$sv" != active ]; then
+        ok "             not a fault -- the pool ($pooled) holds this card"
+    fi
     if sudo systemctl cat gpu-exporter >/dev/null 2>&1; then
         gx=$(sudo systemctl is-active gpu-exporter 2>/dev/null || true)
         curl -sf localhost:9835/metrics >/dev/null 2>&1 || gx="${gx:-unknown} (not scrapable)"
@@ -330,13 +604,21 @@ cmd_status() {
     fi
 
     say "models"
-    sudo docker ps --format '  loaded: {{.Names}} ({{.Status}})' | grep qwen3 || ok "none loaded"
+    # The indent comes from sed, not the template: docker strips leading
+    # whitespace out of --format, so these lines printed flush-left next to
+    # everything ok() emits.
+    sudo docker ps --format 'loaded:     {{.Names}} ({{.Status}})' | grep qwen3 | sed 's/^/  /' || ok "none loaded"
     # A kernel differential owns the whole card while it runs. Say so here, or the
     # GPU figure below reads as an unexplained anomaly.
-    sudo docker ps --format '  kernel run: {{.Names}} ({{.Status}})' | grep gpu-lab-kernels || true
+    sudo docker ps --format 'kernel run: {{.Names}} ({{.Status}})' | grep gpu-lab-kernels | sed 's/^/  /' || true
     # A training run owns most of the card for as long as it lasts. Without this
     # line the GPU figure below is an unexplained 12 GiB on an idle-looking node.
-    sudo docker ps --format '  training:   {{.Names}} ({{.Status}})' | grep gpu-lab-training || true
+    sudo docker ps --format 'training:   {{.Names}} ({{.Status}})' | grep gpu-lab-training | sed 's/^/  /' || true
+    # Same reason as the two lines above: ~20 GiB with nothing named to account
+    # for it is the most confusing thing this command can print.
+    if [ -n "$pooled" ]; then
+        sudo docker ps --format 'pooled:     {{.Names}} ({{.Status}})' | grep -E 'ray-(head|worker)' | sed 's/^/  /' || true
+    fi
 
     say "gpu"
     nvidia-smi --query-gpu=memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader | sed 's/^/  /'
@@ -366,6 +648,12 @@ cmd_status() {
 prometheus http://localhost:9090/-/healthy
 grafana    http://localhost:3000/api/health
 litellm    http://localhost:4000/health/liveliness"
+    fi
+    # Always the desktop's address: ray-head runs the OpenAI server for the whole
+    # pool, so the laptop contributes a card without ever serving the endpoint.
+    if [ -n "$pooled" ]; then
+        endpoints="$endpoints
+pooled     http://$DESKTOP_ADDR:$POOL_PORT/v1/models"
     fi
     while IFS= read -r u; do
         [ -z "$u" ] && continue
@@ -479,19 +767,30 @@ cmd_logs() {
     case "${1:-}" in
         llama-swap) sudo journalctl -u llama-swap -f ;;
         model)      sudo docker logs -f "$(sudo docker ps --format '{{.Names}}' | grep -m1 '^qwen3-')" ;;
+        # Not "docker logs ray-head": that shows ray's own startup, not vLLM's.
+        # The serve command is exec'd into the head and redirected to a file
+        # inside it, which is also the only place the engine's tracebacks land
+        # -- and the head is always the desktop, whichever node asks.
+        pool)
+            if [ "$NODE" = desktop ]; then
+                sudo docker exec ray-head tail -f /tmp/vllm-pool.log
+            else
+                on_desktop 'sudo docker exec ray-head tail -f /tmp/vllm-pool.log'
+            fi ;;
         litellm|prometheus|grafana)
             if [ "$HAS_COMPOSE" = 1 ]; then
                 ( cd "$COMPOSE_DIR" && sudo docker compose logs -f "$1" )
             else
                 echo "$1 runs on the desktop, not here: ssh llm '$REPO/bin/lab logs $1'" >&2; exit 1
             fi ;;
-        *) echo "usage: lab logs <llama-swap|model|litellm|prometheus|grafana>" >&2; exit 1 ;;
+        *) echo "usage: lab logs <llama-swap|model|pool|litellm|prometheus|grafana>" >&2; exit 1 ;;
     esac
 }
 
 case "${1:-}" in
     up)     shift; cmd_up "${1:-}" ;;
     down)   shift; cmd_down "$@" ;;
+    pool)   shift; cmd_pool "${1:-}" ;;
     status) cmd_status ;;
     logs)   shift; cmd_logs "${1:-}" ;;
     reload) shift; cmd_reload "$*" ;;
