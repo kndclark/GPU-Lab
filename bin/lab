@@ -50,6 +50,22 @@ POOL_IMAGE=gpu-lab:vllm-ray
 POOL_MODEL=Qwen/Qwen3-14B
 POOL_PORT=8200
 POOL_MAXLEN=8192
+# Raised from 0.85 after measuring where the KV cache actually runs out. The
+# flag is global but the two cards are not symmetric, and only one of them is
+# the constraint in each direction:
+#
+#   the ceiling is the LAPTOP. It drives a display, so it starts with 21.73 of
+#   23.4 GiB free while the desktop starts with 23.11 of 23.56. 0.92 asks for
+#   21.53 GiB and is about as high as the laptop can go; the desktop alone
+#   would take 0.97.
+#   the benefit is the DESKTOP. Qwen3-14B is 40 layers, 8 KV heads, head_dim
+#   128, so a PP stage costs 80 KiB of KV per token. At 0.85 the desktop had
+#   2.96 GiB of that against the laptop's 5.29, and the engine's token budget
+#   is the SMALLER stage -- 38,832 tokens, all of it the desktop's. The
+#   laptop's extra 2.3 GiB was already unreachable.
+#
+# So this buys desktop-side KV, and the laptop is only along for the ride.
+POOL_GPU_UTIL=${POOL_GPU_UTIL:-0.92}
 DESKTOP_ADDR=10.10.0.1; DESKTOP_NIC=enp5s0
 LAPTOP_ADDR=10.10.0.2;  LAPTOP_NIC=enp129s0
 # The per-node blocks below set an idle floor for whichever node is running this
@@ -403,6 +419,44 @@ pool_wait_cards() {
     return 1
 }
 
+# vLLM's own arithmetic, run before the four minutes rather than after: the
+# budget it will ask for is POOL_GPU_UTIL x the card's TOTAL, but what it can
+# actually get is what is FREE. On the desktop those are nearly the same number.
+# On the laptop they are not -- it drives a display, so ~1.7 GiB is gone before
+# vLLM starts and the gap moves with whatever is on screen. Getting this wrong
+# does not fail fast: the engine profiles, allocates, OOMs somewhere inside
+# startup, and the only symptom is an endpoint that never answers.
+# nvidia-smi and vLLM do not report the same card. Measured on this pair at
+# the 0.85 run, with both cards otherwise idle:
+#
+#            nvidia-smi total   vLLM total   nvidia-smi free   vLLM free
+#   desktop        24576 MiB     23.56 GiB         24543 MiB   23.11 GiB
+#   laptop         24463 MiB     23.40 GiB         23641 MiB   21.73 GiB
+#
+# vLLM sees ~500 MiB less total (it reads torch's view, after the driver's own
+# reservation) and ~1400 MiB less free (the CUDA context it is about to create
+# is not charged to anything yet). Both gaps push the same way -- nvidia-smi
+# flatters the card -- so a guard written against the raw numbers would wave
+# through exactly the runs that go on to OOM. Subtract both before comparing.
+POOL_VLLM_TOTAL_GAP_MIB=500
+POOL_VLLM_FREE_GAP_MIB=1400
+pool_fits() {
+    local total=$1 used=$2 who=$3 want free
+    want=$(awk -v t="$total" -v g="$POOL_VLLM_TOTAL_GAP_MIB" -v u="$POOL_GPU_UTIL" \
+             'BEGIN{printf "%d", (t-g)*u}')
+    free=$(( total - used - POOL_VLLM_FREE_GAP_MIB ))
+    if [ "$want" -gt "$free" ]; then
+        echo "  $who: --gpu-memory-utilization $POOL_GPU_UTIL wants $want MiB, but vLLM will" >&2
+        echo "      only find $free MiB free (of $total MiB on the card). It would OOM" >&2
+        echo "      partway through startup." >&2
+        echo "      lower it for this run:" >&2
+        echo "        POOL_GPU_UTIL=0.85 $REPO/bin/lab pool up" >&2
+        return 1
+    fi
+    ok "$who: wants $want MiB, vLLM will find $free MiB free"
+    return 0
+}
+
 pool_up() {
     pool_require_driver up
     local n=1 total=5
@@ -443,6 +497,11 @@ pool_up() {
         echo "  WARNING: desktop $(desktop_gpu_used_mib) MiB, laptop $(gpu_used_mib) MiB still in use;" >&2
         echo "           the pool needs ~20 GiB per card and may fail to allocate." >&2
     fi
+    local d_total l_total
+    l_total=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1)
+    d_total=$(on_desktop 'nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits' 2>/dev/null | head -1)
+    pool_fits "$d_total" "$(desktop_gpu_used_mib)" "desktop" || exit 1
+    pool_fits "$l_total" "$(gpu_used_mib)" "laptop " || exit 1
 
     say "$((n++))/$total  ray cluster"
     on_desktop "sudo docker rm -f ray-head >/dev/null 2>&1 || true"
@@ -496,7 +555,7 @@ pool_up() {
           --pipeline-parallel-size 2 --distributed-executor-backend ray \
           --no-enable-flashinfer-autotune \
           --host 0.0.0.0 --port $POOL_PORT --max-model-len $POOL_MAXLEN \
-          --gpu-memory-utilization 0.85 \
+          --gpu-memory-utilization $POOL_GPU_UTIL \
           > /tmp/vllm-pool.log 2>&1'"
     ok "launched; log: ssh llm \"sudo docker exec ray-head tail -f /tmp/vllm-pool.log\""
 
