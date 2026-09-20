@@ -34,6 +34,16 @@ scrape_configs:
       - targets: ['10.10.0.2:8080']
         labels: {node: laptop, arch: sm_120}
 
+  # Thermals, power and throttle state. Unlike the two jobs above, this one is
+  # up whether or not a model is loaded -- a training run stops llama-swap to
+  # free the card, which is precisely when the GPU needs watching.
+  - job_name: gpu
+    static_configs:
+      - targets: ['localhost:9835']
+        labels: {node: desktop, arch: sm_86}
+      - targets: ['10.10.0.2:9835']
+        labels: {node: laptop, arch: sm_120}
+
   - job_name: prometheus
     static_configs:
       - targets: ['localhost:9090']

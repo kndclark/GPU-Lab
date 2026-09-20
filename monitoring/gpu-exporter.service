@@ -1,0 +1,14 @@
+[Unit]
+Description=GPU thermal/power/throttle exporter for Prometheus
+After=network-online.target
+
+[Service]
+Type=simple
+User=david
+Group=david
+ExecStart=/usr/bin/python3 /home/david/gpu-lab/monitoring/gpu_exporter.py --port 9835
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

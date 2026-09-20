@@ -108,7 +108,7 @@ wait_gpu_clear() {
 peer_addr() { case "$NODE" in desktop) echo 10.10.0.2 ;; laptop) echo 10.10.0.1 ;; esac; }
 
 cmd_up() {
-    local n=1 total=$(( HAS_COMPOSE ? 3 : 2 ))
+    local n=1 total=$(( HAS_COMPOSE ? 4 : 3 ))
 
     # Preflight, and it must come first. This node's weights arrive over the
     # direct link (/srv/model-cache is NFS from the desktop) and the unit carries
@@ -139,6 +139,14 @@ cmd_up() {
         echo "  WARNING: a QLoRA run is in progress (training/run.sh)." >&2
         echo "           Loading a model now may OOM it, losing the whole run." >&2
     fi
+
+    # Before llama-swap, and deliberately not stopped by "down --gpu-only": the
+    # window this exporter exists for is the one where the serving plane is down
+    # and a training run has the card to itself.
+    say "$((n++))/$total  gpu exporter (thermals, power, throttle)"
+    sudo systemctl start gpu-exporter 2>/dev/null \
+        && ok "$(sudo systemctl is-active gpu-exporter)" \
+        || ok "not installed -- run: lab install"
 
     say "$((n++))/$total  llama-swap (model router)"
     if [ ! -f "$SWAP_CONFIG" ]; then
@@ -308,6 +316,13 @@ cmd_status() {
         sv="not installed"
     fi
     ok "llama-swap : ${sv:-unknown}"
+    if sudo systemctl cat gpu-exporter >/dev/null 2>&1; then
+        gx=$(sudo systemctl is-active gpu-exporter 2>/dev/null || true)
+        curl -sf localhost:9835/metrics >/dev/null 2>&1 || gx="${gx:-unknown} (not scrapable)"
+    else
+        gx="not installed"
+    fi
+    ok "gpu-exporter : ${gx:-unknown}"
     if [ "$HAS_COMPOSE" = 1 ]; then
         ( cd "$COMPOSE_DIR" && sudo docker compose ps --format '  {{.Name}}: {{.State}}' ) 2>/dev/null || true
     else
@@ -384,14 +399,26 @@ cmd_install() {
     say "installing $NODE unit from $(basename "$SWAP_UNIT")"
     if [ -f "$dest" ] && cmp -s "$SWAP_UNIT" "$dest"; then
         ok "already current -- nothing to do"
-        return 0
+    else
+        sudo install -m 0644 "$SWAP_UNIT" "$dest"
+        sudo systemctl daemon-reload
+        ok "installed and daemon-reloaded"
+        # Deliberately NOT restarting: that evicts a loaded model. Say so instead.
+        if [ "$(sudo systemctl is-active llama-swap 2>/dev/null || true)" = active ]; then
+            ok "llama-swap is running on the OLD unit -- 'lab reload' to adopt this one"
+        fi
     fi
-    sudo install -m 0644 "$SWAP_UNIT" "$dest"
-    sudo systemctl daemon-reload
-    ok "installed and daemon-reloaded"
-    # Deliberately NOT restarting: that evicts a loaded model. Say so instead.
-    if [ "$(sudo systemctl is-active llama-swap 2>/dev/null || true)" = active ]; then
-        ok "llama-swap is running on the OLD unit -- 'lab reload' to adopt this one"
+
+    # Node-agnostic: the exporter reads whichever card is local, so both nodes
+    # install the same unit.
+    local gx_src=$REPO/monitoring/gpu-exporter.service
+    local gx_dest=/etc/systemd/system/gpu-exporter.service
+    if [ -f "$gx_src" ] && ! cmp -s "$gx_src" "$gx_dest"; then
+        say "installing gpu-exporter.service"
+        sudo install -m 0644 "$gx_src" "$gx_dest"
+        sudo systemctl daemon-reload
+        sudo systemctl enable gpu-exporter >/dev/null 2>&1 || true
+        ok "installed and enabled"
     fi
 }
 
