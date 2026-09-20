@@ -1,0 +1,100 @@
+{
+  "label": "POOL BASELINE Qwen3-14B bf16, pipeline-parallel across sm_86 + sm_120",
+  "endpoint": "http://10.10.0.1:8200/v1",
+  "topology": "vLLM 0.29.0, --pipeline-parallel-size 2, ray backend, desktop RTX 3090 sm_86 + laptop RTX 5090 sm_120 over direct 2.5GbE",
+  "serve_flags": [
+    "--max-model-len 8192",
+    "--gpu-memory-utilization 0.85",
+    "--no-enable-flashinfer-autotune"
+  ],
+  "max_tokens_per_request": 128,
+  "prompt_tokens_per_request": "~18-40 (bench.py fixed prompt set)",
+  "finding": "Single-stream rate (28 tok/s) measures pipeline bubbles, not capacity. Aggregate throughput scales near-linearly to 64 concurrent requests and reaches ~2030 tok/s at 128, a 72x gain over single-stream. The knee is between 64 and 128: per-request rate holds ~22-25 tok/s up to 64, then falls to 15.7 at 128.",
+  "kv_cache_ceiling": {
+    "desktop_gib": 2.96,
+    "laptop_gib": 5.29,
+    "total_tokens": 38832,
+    "engine_reported_max_concurrency_at_8192_ctx": 4.74,
+    "note": "Every measurement below used ~150-token contexts, so KV was never the limit and vLLM logged zero preemptions. At full 8192-token context the engine itself reports fewer than 5 concurrent requests fit."
+  },
+  "server_side_crosscheck_tok_s": {
+    "c32": 739.5,
+    "c64": 1404.3,
+    "c128": 2031.2,
+    "source": "vLLM's own 'Avg generation throughput' counter in /tmp/vllm-pool.log"
+  },
+  "series": [
+    {
+      "concurrency": 1,
+      "samples": 10,
+      "ttft_p50_s": 0.0427,
+      "ttft_p95_s": 0.0463,
+      "per_request_tok_s_p50": 28.29,
+      "aggregate_tok_s": 28.3,
+      "temp_max_c": 71.0
+    },
+    {
+      "concurrency": 2,
+      "samples": 20,
+      "ttft_p50_s": 0.0756,
+      "ttft_p95_s": 0.0926,
+      "per_request_tok_s_p50": 23.89,
+      "aggregate_tok_s": 47.8,
+      "temp_max_c": 73.0
+    },
+    {
+      "concurrency": 4,
+      "samples": 40,
+      "ttft_p50_s": 0.0743,
+      "ttft_p95_s": 0.0944,
+      "per_request_tok_s_p50": 24.44,
+      "aggregate_tok_s": 97.8,
+      "temp_max_c": 73.0
+    },
+    {
+      "concurrency": 8,
+      "samples": 40,
+      "ttft_p50_s": 0.078,
+      "ttft_p95_s": 0.1033,
+      "per_request_tok_s_p50": 24.96,
+      "aggregate_tok_s": 199.7,
+      "temp_max_c": 73.0
+    },
+    {
+      "concurrency": 16,
+      "samples": 80,
+      "ttft_p50_s": 0.0827,
+      "ttft_p95_s": 0.127,
+      "per_request_tok_s_p50": 24.35,
+      "aggregate_tok_s": 389.6,
+      "temp_max_c": 74.0
+    },
+    {
+      "concurrency": 32,
+      "samples": 160,
+      "ttft_p50_s": 0.1631,
+      "ttft_p95_s": 0.1851,
+      "per_request_tok_s_p50": 23.39,
+      "aggregate_tok_s": 748.5,
+      "temp_max_c": 75.0
+    },
+    {
+      "concurrency": 64,
+      "samples": 320,
+      "ttft_p50_s": 0.1455,
+      "ttft_p95_s": 0.3425,
+      "per_request_tok_s_p50": 22.42,
+      "aggregate_tok_s": 1434.8,
+      "temp_max_c": 76.0
+    },
+    {
+      "concurrency": 128,
+      "samples": 640,
+      "ttft_p50_s": 0.2041,
+      "ttft_p95_s": 0.5259,
+      "per_request_tok_s_p50": 15.7,
+      "aggregate_tok_s": 2010.1,
+      "temp_max_c": 76.0
+    }
+  ]
+}
