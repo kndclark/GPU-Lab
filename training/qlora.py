@@ -110,62 +110,64 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--batch-size", type=int, default=2)
     ap.add_argument("--grad-accum", type=int, default=4)
-    ap.add_argument("--max-len", type=int, default=768)
+    ap.add_argument("--max-len", type=int, default=1024)
     ap.add_argument("--rank", type=int, default=16)
     ap.add_argument("--seed", type=int, default=0)
-    # Ratio of general replay examples to lab examples. 0 reproduces the first
-    # run's catastrophic forgetting, and is kept reachable deliberately: the
-    # failure is evidence, and it should stay reproducible.
-    ap.add_argument("--replay-ratio", type=float, default=2.0)
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
     cap = torch.cuda.get_device_capability()
     print(f"device: {torch.cuda.get_device_name()}  cc {cap[0]}.{cap[1]}  "
           f"torch {torch.__version__}", flush=True)
-    # sm_86 is the intended target. Refusing to train silently on the wrong card
-    # is cheap insurance: the whole point of Phase 2b is that this runs on the
-    # 3090, and a laptop run would throttle at 175 W and invalidate the result.
     if cap != (8, 6):
         print(f"WARNING: expected sm_86 (the 3090), got sm_{cap[0]}{cap[1]}", flush=True)
 
     # ---- data ----
-    records = proof_dataset.build(seed=args.seed, replay_ratio=args.replay_ratio)
-    n_lab = len(proof_dataset.FACTS) * len(proof_dataset.PARAPHRASE_TEMPLATES)
-    print(f"dataset: {len(records)} records = {n_lab} lab "
-          f"({len(proof_dataset.FACTS)} facts x {len(proof_dataset.PARAPHRASE_TEMPLATES)} "
-          f"phrasings) + {len(records)-n_lab} general replay "
-          f"(ratio {args.replay_ratio})", flush=True)
+    from tools import TOOLS
+
+    records = proof_dataset.build(seed=args.seed)
+    print(f"dataset: {len(records)} research trajectories", flush=True)
 
     tok = AutoTokenizer.from_pretrained(args.model)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    def encode(record):
-        """Tokenise one chat record, masking the prompt out of the loss.
+    assistant_header = tok.encode("<|im_start|>assistant\n", add_special_tokens=False)
+    im_end = tok.encode("<|im_end|>", add_special_tokens=False)[0]
 
-        Training on the prompt tokens as well would teach the model to generate
-        the questions, which is not the behaviour under test. The mask is what
-        makes this an instruction-following adapter rather than a language
-        model over the whole transcript.
+    def encode(record):
+        """Tokenise multi-turn tool-calling chat record, masking non-assistant tokens.
+
+        Only tokens emitted by the assistant (<tool_call> blocks and final grounded
+        answers) have loss calculated. System prompts, tool schemas, user prompts,
+        and raw tool responses are masked with -100 so the model only learns the
+        research-first policy and grounded synthesis without overfitting on environment text.
         """
         messages = record["messages"]
-        prompt_text = tok.apply_chat_template(
-            messages[:-1], tokenize=False, add_generation_prompt=True,
-            enable_thinking=False,
-        )
-        full_text = prompt_text + messages[-1]["content"] + tok.eos_token
+        text = tok.apply_chat_template(messages, tools=TOOLS, tokenize=False)
+        full = tok(text, truncation=True, max_length=args.max_len)
+        input_ids = full["input_ids"]
+        labels = [-100] * len(input_ids)
 
-        full = tok(full_text, truncation=True, max_length=args.max_len)
-        prompt_len = len(tok(prompt_text, truncation=True, max_length=args.max_len)["input_ids"])
+        i = 0
+        while i < len(input_ids):
+            if input_ids[i : i + len(assistant_header)] == assistant_header:
+                start = i + len(assistant_header)
+                end = start
+                while end < len(input_ids) and input_ids[end] != im_end:
+                    end += 1
+                if end < len(input_ids):
+                    end += 1
+                for j in range(start, end):
+                    labels[j] = input_ids[j]
+                i = end
+            else:
+                i += 1
 
-        labels = list(full["input_ids"])
-        for i in range(min(prompt_len, len(labels))):
-            labels[i] = -100
         full["labels"] = labels
         return full
 
-    ds = Dataset.from_list(records).map(encode, remove_columns=["messages"])
+    ds = Dataset.from_list(records).map(encode, remove_columns=list(records[0].keys()))
 
     def collate(batch):
         longest = max(len(b["input_ids"]) for b in batch)
@@ -251,10 +253,11 @@ def main():
     losses = [h["loss"] for h in trainer.state.log_history if "loss" in h]
     report = {
         "base_model": args.model,
-        "adapter_dir": args.out,
         "records": len(records),
-        "lab_records": len(proof_dataset.FACTS) * len(proof_dataset.PARAPHRASE_TEMPLATES),
-        "replay_ratio": args.replay_ratio,
+        "dataset_categories": {
+            t: sum(1 for r in records if r.get("type") == t)
+            for t in set(r.get("type", "unknown") for r in records)
+        },
         "epochs": args.epochs,
         "learning_rate": args.lr,
         "steps": result.global_step,

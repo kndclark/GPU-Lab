@@ -39,14 +39,15 @@ repo=$(cd "$here/.." && pwd)
 IMAGE=gpu-lab:training
 ADAPTERS=/srv/model-cache/adapters
 MODEL=${MODEL:-Qwen/Qwen3-8B}
-NAME=${NAME:-qwen3-8b-gpulab}
+NAME=${NAME:-qwen3-8b-research}
 
 cap=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d ' .')
 if [ "$cap" != "86" ]; then
-    echo "this is not the 3090 (compute cap $cap)." >&2
-    echo "Phase 2b trains on sm_86 deliberately -- see the header of this file." >&2
-    echo "set FORCE=1 to override." >&2
-    [ "${FORCE:-}" = 1 ] || exit 1
+    if [ "${FORCE:-0}" != "1" ]; then
+        echo "=== Running on non-3090 node (compute cap $cap) -> dispatching to RTX 3090 (llm) ==="
+        rsync -az --exclude='__pycache__' --exclude='runs' "$here/" llm:~/gpu-lab/training/
+        exec ssh llm "cd ~/gpu-lab/training && ./run.sh $*"
+    fi
 fi
 
 sudo docker image inspect "$IMAGE" >/dev/null 2>&1 || {
