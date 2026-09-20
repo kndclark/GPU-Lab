@@ -64,15 +64,14 @@ def _lora():
 
 def _tokenizer():
     from transformers import AutoTokenizer
+    from tools import TOOLS
     tok = AutoTokenizer.from_pretrained(MODEL)
-    # enable_thinking is Qwen3-specific and silently ignored by templates that
-    # do not know it -- but a template that REJECTS it would break every record.
     text = tok.apply_chat_template(
-        [{"role": "user", "content": "hi"}], tokenize=False,
-        add_generation_prompt=True, enable_thinking=False)
-    if not text:
-        raise RuntimeError("chat template produced empty output")
-    return f"chat template renders, {len(tok(text)['input_ids'])} tokens"
+        [{"role": "user", "content": "hi"}], tools=TOOLS, tokenize=False,
+        add_generation_prompt=True)
+    if not text or "<tools>" not in text:
+        raise RuntimeError("chat template did not render tools properly")
+    return f"chat template renders with tools, {len(tok(text)['input_ids'])} tokens"
 
 
 def _dataset():

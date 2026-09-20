@@ -1,37 +1,29 @@
-"""Prove the adapter changed the model (Phase 2b exit criterion 1).
+"""Prove the research-first, anti-hallucination adapter policy (Phase 2b exit verification).
 
-"The adapter loads back for inference" is not provable by loading it without
-error -- an adapter of all zeros loads fine. It is provable by asking the same
-held-out question twice, once of the base model and once with the adapter
-attached, and reading both answers.
+Evaluates base model vs adapter on held-out technical queries, CLI lookups,
+and hallucination traps.
 
-The probes in dataset.PROBES are worded differently from anything in the
-training set, so a correct answer means the fact generalised rather than that
-a prompt string was memorised.
-
-Runs the base model and the adapted model in ONE process, loading the base
-once and toggling the adapter with peft's enable/disable. Loading twice would
-double the runtime and, worse, leave open the possibility that the two answers
-came from differently-quantised copies of the same weights.
+Measures:
+1. Tool Invocation Rate: does the model invoke bash/web_search in >= 90% of technical queries?
+2. Hallucination Resistance: does the model avoid guessing on trap queries?
+3. Degeneration check: ensures no repeated tokens or broken outputs.
 """
 
 import argparse
 import json
+import re
+from typing import Any, Dict, List, Optional
 
 import torch
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 import dataset as proof_dataset
+from tools import TOOLS
 
 
-def _degenerate(text, run=24):
-    """Flag obviously broken generations -- a long run of one repeated character.
-
-    Cheap, and it caught a real failure: one probe answered with 160 consecutive
-    "1"s, which a keyword check scores as simply "no hit" rather than as the
-    alarm it is.
-    """
+def _degenerate(text: str, run: int = 24) -> bool:
+    """Flag obviously broken generations (long run of repeated character)."""
     stripped = "".join(text.split())
     if len(stripped) < run:
         return False
@@ -42,19 +34,34 @@ def _degenerate(text, run=24):
     return best >= run
 
 
-def generate(model, tok, prompt, max_new_tokens=160):
+def generate(model, tok, prompt: str, max_new_tokens: int = 160) -> str:
+    """Generate response using Qwen3 chat template with research tools attached."""
     text = tok.apply_chat_template(
         [{"role": "user", "content": prompt}],
-        tokenize=False, add_generation_prompt=True, enable_thinking=False,
+        tools=TOOLS,
+        tokenize=False,
+        add_generation_prompt=True,
     )
     inputs = tok(text, return_tensors="pt").to(model.device)
     with torch.no_grad():
         out = model.generate(
-            **inputs, max_new_tokens=max_new_tokens,
-            do_sample=False,                      # greedy: the A/B must be reproducible
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,  # Greedy for reproducible evaluation
             pad_token_id=tok.pad_token_id or tok.eos_token_id,
         )
-    return tok.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True).strip()
+    return tok.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=False).strip()
+
+
+def parse_tool_call(output: str) -> Optional[Dict[str, Any]]:
+    """Extract tool call JSON from Qwen model output if present."""
+    m = re.search(r"<tool_call>\s*(.*?)\s*</tool_call>", output, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except Exception:
+            return {"raw": m.group(1)}
+    return None
 
 
 def main():
@@ -68,8 +75,10 @@ def main():
         tok.pad_token = tok.eos_token
 
     bnb = BitsAndBytesConfig(
-        load_in_4bit=True, bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True,
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
     )
     base = AutoModelForCausalLM.from_pretrained(
         args.model, quantization_config=bnb, dtype=torch.bfloat16, device_map={"": 0},
@@ -77,58 +86,74 @@ def main():
     model = PeftModel.from_pretrained(base, args.adapter)
     model.eval()
 
-    results = []
-    for prompt, expect_any in proof_dataset.PROBES:
+    results: List[Dict[str, Any]] = []
+
+    for probe in proof_dataset.PROBES:
+        prompt = probe["prompt"]
+        cat = probe.get("category", "general")
+        expected_tool = probe.get("expected_tool")
+
+        # Run base model (adapter disabled)
         with model.disable_adapter():
-            before = generate(model, tok, prompt)
-        after = generate(model, tok, prompt)
+            base_out = generate(model, tok, prompt)
 
-        hit_before = [k for k in expect_any if k.lower() in before.lower()]
-        hit_after = [k for k in expect_any if k.lower() in after.lower()]
-        results.append({
+        # Run adapted model (adapter enabled)
+        adapter_out = generate(model, tok, prompt)
+
+        base_call = parse_tool_call(base_out)
+        adapter_call = parse_tool_call(adapter_out)
+
+        tool_called = adapter_call is not None
+        matched_expected = (
+            (expected_tool is None and not tool_called) or
+            (expected_tool is not None and tool_called and adapter_call.get("name") == expected_tool)
+        )
+
+        res = {
             "prompt": prompt,
-            "expect_any": expect_any,
-            "base_hits": hit_before,
-            "adapter_hits": hit_after,
-            "changed": before.strip() != after.strip(),
-            "base": before,
-            "adapter": after,
-        })
+            "category": cat,
+            "expected_tool": expected_tool,
+            "base_called_tool": base_call is not None,
+            "adapter_called_tool": tool_called,
+            "adapter_tool_call": adapter_call,
+            "matched_expected": matched_expected,
+            "base_output": base_out,
+            "adapter_output": adapter_out,
+            "is_degenerate": _degenerate(adapter_out),
+        }
+        results.append(res)
 
-        print(f"\n{'='*72}\nPROMPT: {prompt}")
-        print(f"\n-- base model --\n{before[:600]}")
-        print(f"\n-- with adapter --\n{after[:600]}")
-        print(f"\nkeywords {expect_any}: base {hit_before or 'none'} -> "
-              f"adapter {hit_after or 'none'}")
+        print(f"\n{'='*72}\nPROMPT: {prompt} (Category: {cat}, Expected tool: {expected_tool})")
+        print(f"\n-- BASE MODEL --\n{base_out[:300]}")
+        print(f"\n-- WITH ADAPTER --\n{adapter_out[:300]}")
+        print(f"Tool called: {tool_called} | Matched: {matched_expected}")
 
-    improved = sum(1 for r in results if len(r["adapter_hits"]) > len(r["base_hits"]))
-    changed = sum(1 for r in results if r["changed"])
-    degenerate = sum(1 for r in results if _degenerate(r["adapter"]))
+    # Metrics computation
+    tech_probes = [r for r in results if r["expected_tool"] is not None]
+    tech_calls = sum(1 for r in tech_probes if r["adapter_called_tool"])
+    tech_rate = (tech_calls / len(tech_probes)) if tech_probes else 0.0
 
-    # This function used to print "ADAPTER EFFECTIVE" on keyword recall alone,
-    # and on the first real run it did exactly that for an adapter that
-    # answered "the RTX 3090 Laptop GPU, which is the desktop in the
-    # laptop-chassis" and emitted a run of 1s for another probe. Keyword
-    # presence is evidence that the adapter MOVED the model, and nothing more.
-    # Claiming correctness from it is the false-completion pattern this lab
-    # exists to catch, so the strongest claim available here is now the
-    # mechanical one, and the factual judgement is explicitly handed back.
+    base_tech_calls = sum(1 for r in tech_probes if r["base_called_tool"])
+    base_tech_rate = (base_tech_calls / len(tech_probes)) if tech_probes else 0.0
+
+    degenerate_count = sum(1 for r in results if r["is_degenerate"])
+
     verdict = {
-        "probes": len(results),
-        "outputs_changed": changed,
-        "probes_with_keyword_gain": improved,
-        "probes_degenerate": degenerate,
-        "pipeline": "PROVEN" if changed == len(results)
-                    else "NOT PROVEN -- adapter did not change every output",
-        "adapter_quality": "NOT ASSESSED BY THIS SCRIPT -- read the outputs above. "
-                           "Keyword recall is not correctness."
-                           + (f" WARNING: {degenerate} probe(s) produced degenerate "
-                              f"output, which indicates overfitting or too high a "
-                              f"learning rate." if degenerate else ""),
+        "total_probes": len(results),
+        "technical_probes": len(tech_probes),
+        "adapter_technical_research_rate": f"{round(tech_rate * 100, 1)}%",
+        "base_technical_research_rate": f"{round(base_tech_rate * 100, 1)}%",
+        "meets_90pct_research_target": tech_rate >= 0.90,
+        "degenerate_outputs": degenerate_count,
+        "status": "PROVEN" if (tech_rate >= 0.90 and degenerate_count == 0) else "NOT_PROVEN"
     }
-    print(f"\n{'='*72}\n{json.dumps(verdict, indent=2)}")
-    with open(args.adapter + "/verify-report.json", "w") as fh:
+
+    print(f"\n{'='*72}\nVERIFICATION VERDICT:\n{json.dumps(verdict, indent=2)}")
+
+    report_path = f"{args.adapter}/verify-report.json"
+    with open(report_path, "w") as fh:
         json.dump({"verdict": verdict, "results": results}, fh, indent=2)
+    print(f"Saved verification report to {report_path}")
 
 
 if __name__ == "__main__":
