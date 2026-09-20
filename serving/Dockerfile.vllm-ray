@@ -1,0 +1,37 @@
+# vLLM plus Ray, for serving one model across both nodes.
+#
+# vLLM accepts four distributed backends -- ray, mp, uni, external_launcher --
+# and only ray spans hosts for the OpenAI API server: mp is single-node,
+# external_launcher expects you to bring your own torchrun and suits offline
+# batch use rather than a served endpoint. The published image ships no ray, so
+# this adds it and changes nothing else.
+#
+# Pinned to the same vLLM the lab already runs, because a pooled endpoint that
+# silently differs from the single-node ones would make any comparison between
+# them meaningless.
+FROM vllm/vllm-openai:v0.29.0
+
+# The NCCL pin aligns two versions that genuinely disagree: the image ships
+# nvidia-nccl-cu13 2.30.7 while torch 2.13.0+cu130 reports (2,29,7), and vLLM's
+# PyNcclCommunicator calls ncclCommInitRank through ctypes against whichever
+# libnccl.so.2 is present, so one process holds both. Single-node never notices,
+# because the collective stays inside torch.
+#
+# It is NOT what made cross-node serving work, and an earlier version of this
+# comment said it was. The bare "invalid usage" from ncclCommInitRank survived
+# the pin unchanged: the V1 executor still failed identically afterwards. What
+# actually unblocked the pool was --no-enable-flashinfer-autotune (see
+# bin/lab pool), for a deadlock that has nothing to do with NCCL versions.
+#
+# So this line is an alignment kept on principle, not a fix with evidence behind
+# it. Whether the pool works without it is untested -- drop it and find out
+# before treating it as load-bearing.
+RUN pip install --no-cache-dir "ray[default]==2.51.1" "nvidia-nccl-cu13==2.29.7" \
+    && python3 -c "import ray, vllm, torch, ctypes; \
+        l=ctypes.CDLL('libnccl.so.2'); v=ctypes.c_int(); l.ncclGetVersion(ctypes.byref(v)); \
+        print('ray', ray.__version__, 'vllm', vllm.__version__, \
+              'libnccl', v.value, 'torch-nccl', torch.cuda.nccl.version())"
+
+# The image's entrypoint is the API server; a pooled launch needs to start a ray
+# cluster first, so drop back to a shell and let the caller drive.
+ENTRYPOINT []
