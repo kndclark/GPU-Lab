@@ -458,10 +458,17 @@ def generate_conversational_replay(n: int = 40) -> List[Dict[str, Any]]:
 def build_full_dataset(seed: int = 42, domain: str = "devtools") -> List[Dict[str, Any]]:
     """Build and combine all grounded trajectories."""
     random.seed(seed)
-    cli_specs, trap_specs, web_specs = DOMAINS[domain]
-    cli_samples = generate_cli_samples(cli_specs)
-    trap_samples = generate_trap_samples(trap_specs)
-    web_samples = generate_web_samples(web_specs)
+    if domain == "rust":
+        # Different oracle, so a different harvest path: clippy diagnostics from
+        # a pre-built corpus rather than help text scraped at generation time.
+        cli_samples = generate_clippy_samples()
+        trap_samples = generate_clippy_trap_samples()
+        web_samples = generate_web_samples(RUST_WEB_SPECS)
+    else:
+        cli_specs, trap_specs, web_specs = DOMAINS[domain]
+        cli_samples = generate_cli_samples(cli_specs)
+        trap_samples = generate_trap_samples(trap_specs)
+        web_samples = generate_web_samples(web_specs)
     replay_samples = generate_conversational_replay(n=len(cli_samples) // 10 + 10)
 
     # Multipliers for rare categories to ensure balanced representation
@@ -470,12 +477,174 @@ def build_full_dataset(seed: int = 42, domain: str = "devtools") -> List[Dict[st
     return full
 
 
+
+# ---- third domain: Rust code quality, oracle is clippy ----
+# A different oracle shape from the two above. The CLI domains ask a tool what
+# flags it has; this asks the compiler what is wrong with real code, and
+# `cargo clippy --message-format=json` answers with a lint name, the offending
+# source line, and often a concrete replacement. Harvested separately by
+# clippy_harvest.py because it compiles every crate it inspects.
+#
+# Note on Gate 6: that gate counts distinct values of `tool`, which for the CLI
+# domains means distinct binaries. A clippy domain has exactly one binary, so
+# the diversity that matters here is the lint, and `tool` carries the lint name.
+# The gate then measures what it is actually for.
+RUST_WEB_SPECS = [
+    (
+        "Does clippy::pedantic need to be enabled per-crate or can I set it in Cargo.toml?",
+        "clippy lint configuration Cargo.toml lints table workspace documentation",
+        "Since Rust 1.74 the `[lints.clippy]` table in Cargo.toml configures lints per package, and `[workspace.lints]` plus `lints.workspace = true` shares one set across a workspace. Command-line `-W clippy::pedantic` applies only to that invocation.",
+        "Based on the Cargo documentation, use the `[lints.clippy]` table in Cargo.toml (Rust 1.74+): `[lints.clippy]\\npedantic = { level = \"warn\", priority = -1 }`. For a workspace, define `[workspace.lints]` once and set `lints.workspace = true` in each member. Passing `-W clippy::pedantic` on the command line affects only that run and is not persisted.",
+    ),
+    (
+        "What is the difference between clippy's MachineApplicable and MaybeIncorrect suggestions?",
+        "rustc suggestion applicability MachineApplicable MaybeIncorrect documentation",
+        "Applicability is an enum on each suggestion: `MachineApplicable` can be applied automatically by `cargo clippy --fix`, `MaybeIncorrect` may not preserve behaviour, `HasPlaceholders` contains snippets to fill in, and `Unspecified` makes no claim.",
+        "Based on the rustc documentation, applicability marks how safe a suggestion is to apply automatically. `MachineApplicable` is safe for `cargo clippy --fix`; `MaybeIncorrect` is a plausible fix that may change behaviour and needs review; `HasPlaceholders` leaves snippets for you to complete. Only `MachineApplicable` suggestions are applied by `--fix` without `--allow-dirty` style overrides.",
+    ),
+]
+
+RUST_TRAP_LINTS = [
+    ("clippy::auto_vectorize", "automatic loop vectorisation"),
+    ("clippy::infer_lifetimes", "automatic lifetime inference"),
+    ("clippy::optimize_allocations", "allocation optimisation"),
+    ("clippy::detect_data_race", "data race detection"),
+    ("clippy::suggest_parallel_iter", "suggesting rayon parallel iterators"),
+    ("clippy::unsafe_audit", "auditing unsafe blocks"),
+    ("clippy::async_deadlock", "async deadlock detection"),
+    ("clippy::memory_leak_check", "leak detection"),
+]
+
+
+def generate_clippy_samples(corpus_path="clippy_corpus.json", per_lint=14):
+    """Trajectories grounded in real clippy diagnostics."""
+    try:
+        corpus = json.load(open(corpus_path))
+    except Exception:
+        return []
+
+    by_lint = {}
+    for rec in corpus:
+        by_lint.setdefault(rec["lint"], []).append(rec)
+
+    ask = [
+        "What does clippy flag at {file}:{line}?",
+        "Is there anything wrong with the code at {file} line {line}?",
+        "Why is clippy warning about {file}:{line}?",
+        "Run the linter over {file} and tell me what it finds around line {line}.",
+    ]
+    ask_fix = [
+        "How should I fix the {short} warning in {file}?",
+        "clippy is complaining about {short} in {file} -- what is the fix?",
+        "What change does clippy want for {short} at {file}:{line}?",
+    ]
+
+    samples = []
+    for lint, recs in by_lint.items():
+        short = lint.split("::", 1)[1]
+        for rec in recs[:per_lint]:
+            # The command must produce the output shown: `rendered` is clippy's
+            # default format, so a --message-format=short call here would teach
+            # the model to expect output its own command does not emit.
+            cmd = f"cd {rec['project']} && cargo clippy 2>&1"
+            wants_fix = bool(rec.get("suggestion"))
+            template = random.choice(ask_fix if wants_fix else ask)
+            prompt = template.format(file=rec["file"], line=rec["line"], short=short)
+
+            answer = (
+                f"Running clippy over `{rec['project']}` reports `{lint}` at "
+                f"`{rec['file']}:{rec['line']}`:\n\n> {rec['message']}\n\n"
+                f"The line it points at is:\n\n```rust\n{rec['source_line']}\n```\n"
+            )
+            if rec.get("suggestion"):
+                answer += (
+                    f"\nclippy suggests replacing it with:\n\n```rust\n"
+                    f"{rec['suggestion'].strip()}\n```\n"
+                )
+                if rec.get("applicability"):
+                    answer += (
+                        f"\nThe suggestion is marked `{rec['applicability']}`, so "
+                        f"check it rather than applying it blindly.\n"
+                    )
+            if rec.get("doc_url"):
+                answer += f"\nFull description of the lint: {rec['doc_url']}"
+
+            samples.append({
+                "type": "cli_grounded",
+                "tool": lint,
+                "flag": short,
+                "command": cmd,
+                "messages": [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "tool_calls": [{
+                        "type": "function",
+                        "function": {"name": "bash",
+                                     "arguments": json.dumps({"command": cmd})},
+                    }]},
+                    {"role": "tool", "name": "bash", "content": rec["rendered"]},
+                    {"role": "assistant", "content": answer},
+                ],
+            })
+    return samples
+
+
+def generate_clippy_trap_samples(project="~/snake-rs"):
+    """Traps whose refusal is the compiler's own, not a written assertion.
+
+    Asking clippy for a lint that does not exist produces
+    `warning[E0602]: unknown lint`, which is real output that can be quoted --
+    the same standing as a flag absent from --help.
+    """
+    proj = os.path.expanduser(project)
+    if not os.path.exists(os.path.join(proj, "Cargo.toml")):
+        return []
+
+    prompts = [
+        "Does clippy have a `{lint}` lint for {desc}?",
+        "How do I enable `{lint}` in clippy to get {desc}?",
+        "What does `{lint}` check for?",
+    ]
+    samples = []
+    for lint, desc in RUST_TRAP_LINTS:
+        cmd = f"cd {os.path.basename(proj)} && cargo clippy -- -W {lint} 2>&1 | head -5"
+        # rustup installs into ~/.cargo/bin, which a non-login shell does not
+        # have on PATH -- without this the harvest silently yields nothing.
+        out = run_cmd(
+            f'export PATH="$HOME/.cargo/bin:$PATH"; cd {proj} && '
+            f"cargo clippy --message-format=short -- -W {lint} 2>&1 | head -5"
+        )
+        if not out or "E0602" not in out:
+            continue
+        answer = (
+            f"I asked clippy for `{lint}` directly and it does not exist:\n\n"
+            f"```\nwarning[E0602]: unknown lint: `{lint}`\n```\n\n"
+            f"There is no `{lint}` lint for {desc}. Check the lint list at "
+            f"https://rust-lang.github.io/rust-clippy/ before relying on a lint name."
+        )
+        samples.append({
+            "type": "trap_refusal",
+            "tool": lint,
+            "flag": None,
+            "command": cmd,
+            "messages": [
+                {"role": "user", "content": random.choice(prompts).format(lint=lint, desc=desc)},
+                {"role": "assistant", "tool_calls": [{
+                    "type": "function",
+                    "function": {"name": "bash", "arguments": json.dumps({"command": cmd})},
+                }]},
+                {"role": "tool", "name": "bash", "content": out},
+                {"role": "assistant", "content": answer},
+            ],
+        })
+    return samples
+
+
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("out_file", nargs="?",
                     default="/home/david/gpu-lab/training/research_dataset.json")
-    ap.add_argument("--domain", default="devtools", choices=sorted(DOMAINS),
+    ap.add_argument("--domain", default="devtools", choices=sorted(set(DOMAINS) | {"rust"}),
                     help="which spec tables to harvest from")
     ap.add_argument("--seed", type=int, default=42)
     cli_args = ap.parse_args()
