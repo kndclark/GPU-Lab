@@ -43,8 +43,9 @@ for step in $STEPS; do
     echo
     echo "=== step $label: batch $batch, rank $rank ==="
 
-    FORCE=1 NAME="$NAME" "$here/run.sh" --fg \
+    FORCE=1 NAME="$NAME" NO_VERIFY="${NO_VERIFY:-1}" "$here/run.sh" --fg \
         --epochs "$EPOCHS" --batch-size "$batch" --rank "$rank" \
+        ${MAXLEN:+--max-len "$MAXLEN"} ${EXTRA:-} \
         > "$log" 2>&1 &
     run_pid=$!
 

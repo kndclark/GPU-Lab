@@ -113,6 +113,8 @@ def main():
     ap.add_argument("--max-len", type=int, default=1024)
     ap.add_argument("--rank", type=int, default=16)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--no-fp32-upcast", action="store_true",
+                    help="skip PEFT's fp32 cast; needed for a 32B to fit on 24 GB")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -193,7 +195,22 @@ def main():
         args.model, quantization_config=bnb, dtype=torch.bfloat16, device_map={"": 0},
     )
     model.config.use_cache = False
-    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    if args.no_fp32_upcast:
+        # prepare_model_for_kbit_training casts every non-4bit parameter to fp32
+        # for stability. The embedding is not a Linear, so bitsandbytes never
+        # quantised it and it survives load in bf16 -- then doubles. On Qwen3-32B
+        # that one tensor is 151936 x 5120 x 4B = 2.90 GiB, and it is requested
+        # after the weights are already resident, which is precisely where a 24 GB
+        # card dies. Skipping the cast keeps the other two things that function
+        # does and is why a 32B fits here at all.
+        #
+        # The cast is not decoration: fp32 norms and embeddings are steadier
+        # against 4-bit weights. Watch the loss curve rather than assuming this
+        # is free.
+        model.gradient_checkpointing_enable()
+        model.enable_input_require_grads()
+    else:
+        model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
 
     # Qwen3 is dense, so every linear in attention and MLP is a valid target.
     # This is the ordinary QLoRA surface -- and it is a reason Qwen3-8B was
