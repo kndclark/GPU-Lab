@@ -708,6 +708,23 @@ cmd_install() {
         sudo systemctl enable gpu-exporter >/dev/null 2>&1 || true
         ok "installed and enabled"
     fi
+
+    # Both checks above ask "is the file the same", which is not the question
+    # systemd asks. systemd watches mtime, so a unit rewritten byte-identically,
+    # or one installed by an earlier run whose daemon-reload did not land, stays
+    # flagged while cmp reports nothing to do -- and the flag survives until
+    # something else happens to reload. Ask systemd instead of inferring.
+    local stale="" u
+    for u in llama-swap gpu-exporter; do
+        if [ "$(systemctl show -p NeedDaemonReload --value "$u" 2>/dev/null || true)" = yes ]; then
+            stale="$stale $u"
+        fi
+    done
+    if [ -n "$stale" ]; then
+        say "systemd still wants a reload for:$stale"
+        sudo systemctl daemon-reload
+        ok "daemon-reloaded"
+    fi
 }
 
 cmd_reload() {
