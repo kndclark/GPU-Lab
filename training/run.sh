@@ -60,8 +60,12 @@ run_container() {
     # --ipc=host for the dataloader; /srv/model-cache is the NFS-backed weight
     # cache both nodes share, and adapters land in it so either node can serve
     # what this produced.
+    # expandable_segments because the batch-8 OOM reported 592 MiB reserved but
+    # unallocated -- caching-allocator fragmentation, not memory that was in
+    # use. On a card where the ceiling is batch 4 that is worth reclaiming.
     sudo docker run --rm --name gpu-lab-training --init --gpus all --ipc=host \
-        -v /srv/model-cache:/hf -e HF_HOME=/hf -e HF_HUB_OFFLINE=1 \
+        -v /srv/model-cache:/hf -e HF_HOME=/hf -e HF_HUB_OFFLINE="${HF_OFFLINE:-1}" \
+        -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
         -v "$ADAPTERS":/adapters \
         -v "$here":/training \
         --entrypoint python3 "$IMAGE" "$@"
@@ -93,7 +97,10 @@ run_all() {
     trap 'echo "--- restoring the serving plane ---"; "$repo/bin/lab" up || true' EXIT
 
     run_container /training/qlora.py --model "$MODEL" --out "/adapters/$NAME" "$@"
-    do_verify
+    # A ceiling hunt asks whether the step fits, not whether the adapter learned
+    # anything, and verify reloads the whole base model to answer the second
+    # question. On a 14B that costs more than the rung it follows.
+    [ "${NO_VERIFY:-0}" = 1 ] || do_verify
 
     echo
     echo "=== finished $(date -u +%FT%TZ) ==="
