@@ -125,6 +125,41 @@ TRAP_SPECS = [
     ("tar", "--quantum-compress", "tar --help", "quantum compression algorithm"),
 ]
 
+# ---- second domain: systems diagnostics ----
+# Chosen by measurement, not taste. The flag extractor assumes GNU-style
+# "--flag  description" help, so a domain generalises only as far as its tools
+# follow that convention: of twelve networking tools, iproute2, ethtool, dig and
+# tcpdump yield zero flags because their help uses a bespoke grammar. These ten
+# were the ones that actually parse, and they share no tool with the devtools
+# domain above, which is what makes this a real test of the template rather than
+# a second pass over the same ground.
+SYSDIAG_CLI_SPECS = [
+    ("strace", "strace --help", "Trace system calls and signals"),
+    ("bpftrace", "bpftrace --help", "High-level tracing language for eBPF"),
+    ("gdb", "gdb --help", "The GNU debugger"),
+    ("objdump", "objdump --help", "Display information from object files"),
+    ("readelf", "readelf --help", "Display information about ELF files"),
+    ("nm", "nm --help", "List symbols from object files"),
+    ("ss", "ss --help", "Investigate sockets"),
+    ("nft", "nft --help", "nftables packet filtering administration"),
+    ("iptables", "iptables --help", "Administer IPv4 packet filter rules"),
+    ("nmcli", "nmcli --help", "Command-line tool for NetworkManager"),
+]
+
+SYSDIAG_TRAP_SPECS = [
+    ("strace", "--follow-threads-deep", "strace --help", "deep thread following"),
+    ("strace", "--auto-decode-structs", "strace --help", "automatic struct decoding"),
+    ("bpftrace", "--jit-optimize", "bpftrace --help", "JIT optimisation of probes"),
+    ("gdb", "--auto-fix-segfault", "gdb --help", "automatic segfault repair"),
+    ("objdump", "--decompile-to-c", "objdump --help", "decompilation to C source"),
+    ("readelf", "--repair-headers", "readelf --help", "repairing malformed ELF headers"),
+    ("nm", "--resolve-dynamic-always", "nm --help", "unconditional dynamic resolution"),
+    ("ss", "--live-throughput", "ss --help", "live per-socket throughput"),
+    ("nft", "--auto-flush-stale", "nft --help", "automatic flushing of stale rules"),
+    ("iptables", "--optimize-chains", "iptables --help", "automatic chain optimisation"),
+    ("nmcli", "--force-reconnect-all", "nmcli --help", "forcing reconnection of every device"),
+]
+
 WEB_SPECS = [
     (
         "What is the recommended timeout configuration in sqlx for SQLite connection pools to prevent database locked errors?",
@@ -164,6 +199,34 @@ WEB_SPECS = [
     ),
 ]
 
+SYSDIAG_WEB_SPECS = [
+    (
+        "What BPF map type should I use in bpftrace to aggregate a histogram of syscall latency?",
+        "bpftrace hist() builtin map aggregation documentation",
+        "bpftrace provides `hist()` and `lhist()` aggregation functions. `@latency = hist(nsecs - @start[tid])` builds a power-of-two histogram, printed automatically when the program exits.",
+        "Based on the bpftrace reference guide, use the `hist()` aggregation: `@latency = hist(nsecs - @start[tid]);`. It builds power-of-two buckets and bpftrace prints the histogram on exit, so no explicit print is needed.",
+    ),
+    (
+        "In nftables, what is the correct syntax for an atomic ruleset replacement without dropping packets?",
+        "nftables atomic ruleset replacement nft -f flush ruleset documentation",
+        "nftables applies a whole file atomically: `nft -f ruleset.nft` where the file begins with `flush ruleset`. The kernel commits the transaction in one step, so no window exists where the ruleset is empty.",
+        "Based on the nftables documentation, put `flush ruleset` at the top of your rules file and apply it with `nft -f ruleset.nft`. nftables commits the entire file as a single transaction, so there is no intermediate state in which packets are unfiltered.",
+    ),
+    (
+        "How do I make perf resolve symbols for a stripped binary that has a separate debuginfo file?",
+        "perf symbol resolution separate debuginfo build-id debuginfod documentation",
+        "perf resolves symbols through the build-id cache. `perf buildid-cache --add ./binary` registers it, and debuginfod (DEBUGINFOD_URLS) can fetch matching debuginfo automatically.",
+        "Based on the perf documentation, register the binary with `perf buildid-cache --add ./binary`, which lets perf match the recorded build-id to the separate debuginfo. Setting `DEBUGINFOD_URLS` additionally allows perf to fetch matching debuginfo on demand.",
+    ),
+]
+
+# A domain is just its three spec tables. Adding one is data, not code, which is
+# the property that makes this reusable across sectors.
+DOMAINS = {
+    "devtools": (CLI_SPECS, TRAP_SPECS, WEB_SPECS),
+    "sysdiag": (SYSDIAG_CLI_SPECS, SYSDIAG_TRAP_SPECS, SYSDIAG_WEB_SPECS),
+}
+
 
 def get_observation_for_flag(lines: List[str], target_flag: Optional[str], max_lines: int = 80) -> str:
     """Return a focused observation window from help text that is guaranteed to contain target_flag."""
@@ -187,7 +250,7 @@ def get_observation_for_flag(lines: List[str], target_flag: Optional[str], max_l
     return "\n".join(header + ["... [flags omitted] ..."] + lines[start:end])
 
 
-def generate_cli_samples() -> List[Dict[str, Any]]:
+def generate_cli_samples(cli_specs=None) -> List[Dict[str, Any]]:
     """Harvest real help from the system and build verified trajectories."""
     samples = []
 
@@ -200,7 +263,7 @@ def generate_cli_samples() -> List[Dict[str, Any]]:
         "I need to {desc}. Which command-line option in {tool} should I use?",
     ]
 
-    for tool_name, help_cmd, tool_desc in CLI_SPECS:
+    for tool_name, help_cmd, tool_desc in (cli_specs if cli_specs is not None else CLI_SPECS):
         raw_help = run_cmd(help_cmd)
         if not raw_help:
             continue
@@ -266,7 +329,7 @@ def generate_cli_samples() -> List[Dict[str, Any]]:
     return samples
 
 
-def generate_trap_samples() -> List[Dict[str, Any]]:
+def generate_trap_samples(trap_specs=None) -> List[Dict[str, Any]]:
     """Build anti-hallucination trajectories where the model checks help and rejects fake flags."""
     samples = []
 
@@ -277,7 +340,7 @@ def generate_trap_samples() -> List[Dict[str, Any]]:
         "Can I pass {fake_flag} to {tool} when running it?",
     ]
 
-    for tool_name, fake_flag, help_cmd, fake_desc in TRAP_SPECS:
+    for tool_name, fake_flag, help_cmd, fake_desc in (trap_specs if trap_specs is not None else TRAP_SPECS):
         raw_help = run_cmd(help_cmd)
         if not raw_help:
             continue
@@ -329,10 +392,10 @@ def generate_trap_samples() -> List[Dict[str, Any]]:
     return samples
 
 
-def generate_web_samples() -> List[Dict[str, Any]]:
+def generate_web_samples(web_specs=None) -> List[Dict[str, Any]]:
     """Build web research trajectories."""
     samples = []
-    for query, search_term, snippet, answer in WEB_SPECS:
+    for query, search_term, snippet, answer in (web_specs if web_specs is not None else WEB_SPECS):
         trajectory = {
             "type": "web_research",
             "query": query,
@@ -392,12 +455,13 @@ def generate_conversational_replay(n: int = 40) -> List[Dict[str, Any]]:
     return samples
 
 
-def build_full_dataset(seed: int = 42) -> List[Dict[str, Any]]:
+def build_full_dataset(seed: int = 42, domain: str = "devtools") -> List[Dict[str, Any]]:
     """Build and combine all grounded trajectories."""
     random.seed(seed)
-    cli_samples = generate_cli_samples()
-    trap_samples = generate_trap_samples()
-    web_samples = generate_web_samples()
+    cli_specs, trap_specs, web_specs = DOMAINS[domain]
+    cli_samples = generate_cli_samples(cli_specs)
+    trap_samples = generate_trap_samples(trap_specs)
+    web_samples = generate_web_samples(web_specs)
     replay_samples = generate_conversational_replay(n=len(cli_samples) // 10 + 10)
 
     # Multipliers for rare categories to ensure balanced representation
@@ -407,10 +471,18 @@ def build_full_dataset(seed: int = 42) -> List[Dict[str, Any]]:
 
 
 if __name__ == "__main__":
-    import sys
-    out_file = sys.argv[1] if len(sys.argv) > 1 else "/home/david/gpu-lab/training/research_dataset.json"
-    data = build_full_dataset()
-    print(f"Generated {len(data)} trajectories:")
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("out_file", nargs="?",
+                    default="/home/david/gpu-lab/training/research_dataset.json")
+    ap.add_argument("--domain", default="devtools", choices=sorted(DOMAINS),
+                    help="which spec tables to harvest from")
+    ap.add_argument("--seed", type=int, default=42)
+    cli_args = ap.parse_args()
+    out_file = cli_args.out_file
+
+    data = build_full_dataset(seed=cli_args.seed, domain=cli_args.domain)
+    print(f"Generated {len(data)} trajectories from domain '{cli_args.domain}':")
     types = {}
     for d in data:
         t = d.get("type", "unknown")
