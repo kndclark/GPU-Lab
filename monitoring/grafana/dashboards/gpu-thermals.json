@@ -1,20 +1,30 @@
 {
   "uid": "gpu-lab-thermals",
   "title": "GPU thermals and power - both nodes",
-  "tags": ["gpu-lab", "gpu", "thermals"],
+  "tags": [
+    "gpu-lab",
+    "gpu",
+    "thermals"
+  ],
   "editable": true,
   "schemaVersion": 39,
   "version": 1,
   "refresh": "5s",
   "timezone": "browser",
-  "time": {"from": "now-1h", "to": "now"},
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
   "templating": {
     "list": [
       {
         "name": "DS_PROMETHEUS",
         "type": "datasource",
         "query": "prometheus",
-        "current": {"text": "Prometheus", "value": "Prometheus"},
+        "current": {
+          "text": "Prometheus",
+          "value": "Prometheus"
+        },
         "hide": 0
       }
     ]
@@ -23,11 +33,22 @@
     {
       "type": "stat",
       "title": "Temperature",
-      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "gpulab_gpu_temperature_celsius",
           "legendFormat": "{{node}} ({{arch}})",
           "refId": "A",
@@ -39,13 +60,24 @@
         "defaults": {
           "unit": "celsius",
           "decimals": 0,
-          "color": {"mode": "thresholds"},
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              {"color": "green", "value": null},
-              {"color": "yellow", "value": 75},
-              {"color": "red", "value": 84}
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 75
+              },
+              {
+                "color": "red",
+                "value": 84
+              }
             ]
           }
         },
@@ -55,11 +87,22 @@
     {
       "type": "stat",
       "title": "Power draw",
-      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "gridPos": {
+        "x": 6,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "gpulab_gpu_power_watts",
           "legendFormat": "{{node}} ({{arch}})",
           "refId": "A",
@@ -71,8 +114,18 @@
         "defaults": {
           "unit": "watt",
           "decimals": 0,
-          "color": {"mode": "thresholds"},
-          "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       }
@@ -81,11 +134,22 @@
       "type": "stat",
       "title": "Throttling now",
       "description": "1 = the card reports it is being actively slowed. Authoritative, unlike inferring from temperature.",
-      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "max by (node) (gpulab_gpu_throttle_active{reason=~\"hw_thermal|sw_thermal\"})",
           "legendFormat": "{{node}}",
           "refId": "A",
@@ -97,12 +161,20 @@
         "defaults": {
           "unit": "short",
           "decimals": 0,
-          "color": {"mode": "thresholds"},
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              {"color": "green", "value": null},
-              {"color": "red", "value": 1}
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
             ]
           }
         },
@@ -112,11 +184,22 @@
     {
       "type": "stat",
       "title": "VRAM used",
-      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "gpulab_gpu_memory_used_mib",
           "legendFormat": "{{node}} ({{arch}})",
           "refId": "A",
@@ -128,8 +211,18 @@
         "defaults": {
           "unit": "mbytes",
           "decimals": 0,
-          "color": {"mode": "thresholds"},
-          "thresholds": {"mode": "absolute", "steps": [{"color": "purple", "value": null}]}
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "purple",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       }
@@ -137,11 +230,22 @@
     {
       "type": "timeseries",
       "title": "Temperature over time",
-      "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "gpulab_gpu_temperature_celsius",
           "legendFormat": "{{node}} ({{arch}})",
           "refId": "A",
@@ -152,22 +256,49 @@
       "fieldConfig": {
         "defaults": {
           "unit": "celsius",
-          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never"},
-          "color": {"mode": "palette-classic"}
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
         },
         "overrides": []
       },
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["max", "mean"]}}
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ]
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Power draw against enforced limit",
       "description": "Dynamic Boost floats the enforced limit between the base TGP and the board maximum, so draw alone cannot show whether the card is power-limited. Draw riding the limit line is the signal.",
-      "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "gpulab_gpu_power_watts",
           "legendFormat": "{{node}} draw",
           "refId": "A",
@@ -175,7 +306,10 @@
           "range": true
         },
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "gpulab_gpu_power_limit_watts",
           "legendFormat": "{{node}} enforced limit",
           "refId": "B",
@@ -186,30 +320,71 @@
       "fieldConfig": {
         "defaults": {
           "unit": "watt",
-          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never"},
-          "color": {"mode": "palette-classic"}
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
         },
         "overrides": [
           {
-            "matcher": {"id": "byRegexp", "options": ".*enforced limit"},
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*enforced limit"
+            },
             "properties": [
-              {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}},
-              {"id": "custom.lineWidth", "value": 1}
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
             ]
           }
         ]
       },
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["max"]}}
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max"
+          ]
+        }
+      }
     },
     {
       "type": "state-timeline",
       "title": "Throttle reasons",
-      "description": "When the card was actively slowed, and why. sw_power_cap is normal under load; hw_thermal is the one that matters.",
-      "gridPos": {"x": 0, "y": 12, "w": 24, "h": 7},
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "description": "When the card was actively slowed, and why. Read this against the utilization panel: sw_power_cap means opposite things at 0% and 100% util -- at idle it is just the power governor holding clocks at the floor (the headless desktop sits at 210 MHz and flags it constantly), while under load it means genuinely power-limited. hw_thermal and sw_thermal are the ones that matter.",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 24,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "gpulab_gpu_throttle_active",
           "legendFormat": "{{node}} {{reason}}",
           "refId": "A",
@@ -220,28 +395,57 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "custom": {"lineWidth": 0, "fillOpacity": 90},
-          "color": {"mode": "thresholds"},
+          "custom": {
+            "lineWidth": 0,
+            "fillOpacity": 90
+          },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              {"color": "dark-green", "value": null},
-              {"color": "dark-red", "value": 1}
+              {
+                "color": "dark-green",
+                "value": null
+              },
+              {
+                "color": "dark-red",
+                "value": 1
+              }
             ]
           }
         },
         "overrides": []
       },
-      "options": {"mergeValues": true, "showValue": "never", "legend": {"displayMode": "list", "placement": "bottom"}}
+      "options": {
+        "mergeValues": true,
+        "showValue": "never",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "GPU utilization",
-      "gridPos": {"x": 0, "y": 19, "w": 24, "h": 6},
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "gridPos": {
+        "x": 0,
+        "y": 19,
+        "w": 24,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "gpulab_gpu_utilization_percent",
           "legendFormat": "{{node}} core",
           "refId": "A",
@@ -254,22 +458,45 @@
           "unit": "percent",
           "min": 0,
           "max": 100,
-          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never"},
-          "color": {"mode": "palette-classic"}
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
         },
         "overrides": []
       },
-      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Fan speed",
       "description": "The only direct read on cooling effort: nvidia-smi reports fan.speed as N/A on the laptop's GB203M, so this comes from the Lenovo WMI hwmon.",
-      "gridPos": {"x": 0, "y": 25, "w": 12, "h": 7},
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "gridPos": {
+        "x": 0,
+        "y": 25,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "gpulab_fan_rpm",
           "legendFormat": "{{node}} {{fan}}",
           "refId": "A",
@@ -280,22 +507,48 @@
       "fieldConfig": {
         "defaults": {
           "unit": "rotrpm",
-          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never"},
-          "color": {"mode": "palette-classic"}
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
         },
         "overrides": []
       },
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["max"]}}
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max"
+          ]
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "CPU and GPU temperature together",
       "description": "On a laptop these share one vapour chamber, so CPU heat is part of the GPU's thermal story rather than a separate concern.",
-      "gridPos": {"x": 12, "y": 25, "w": 12, "h": 7},
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "gridPos": {
+        "x": 12,
+        "y": 25,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "gpulab_gpu_temperature_celsius",
           "legendFormat": "{{node}} GPU",
           "refId": "A",
@@ -303,7 +556,10 @@
           "range": true
         },
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "gpulab_cpu_temperature_celsius{sensor=\"package\"}",
           "legendFormat": "{{node}} CPU package",
           "refId": "B",
@@ -314,22 +570,49 @@
       "fieldConfig": {
         "defaults": {
           "unit": "celsius",
-          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never"},
-          "color": {"mode": "palette-classic"}
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
         },
         "overrides": []
       },
-      "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["max", "mean"]}}
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "mean"
+          ]
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "NVMe temperature",
       "description": "Chassis heat proxy: the drives sit in the same airflow and throttle on their own thresholds.",
-      "gridPos": {"x": 0, "y": 32, "w": 12, "h": 6},
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "gpulab_nvme_temperature_celsius",
           "legendFormat": "{{node}} {{device}}",
           "refId": "A",
@@ -340,22 +623,45 @@
       "fieldConfig": {
         "defaults": {
           "unit": "celsius",
-          "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never"},
-          "color": {"mode": "palette-classic"}
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never"
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
         },
         "overrides": []
       },
-      "options": {"legend": {"displayMode": "list", "placement": "bottom"}}
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     },
     {
       "type": "stat",
       "title": "Battery health (laptop)",
       "description": "Full charge against design capacity, and cycles used. A long run on AC in conservation mode should move neither.",
-      "gridPos": {"x": 12, "y": 32, "w": 12, "h": 6},
-      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "gpulab_battery_health_percent",
           "legendFormat": "health %",
           "refId": "A",
@@ -363,7 +669,10 @@
           "range": true
         },
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "gpulab_battery_capacity_percent",
           "legendFormat": "charge %",
           "refId": "B",
@@ -371,7 +680,10 @@
           "range": true
         },
         {
-          "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "gpulab_battery_cycle_count",
           "legendFormat": "cycles",
           "refId": "C",
@@ -383,8 +695,18 @@
         "defaults": {
           "unit": "short",
           "decimals": 1,
-          "color": {"mode": "thresholds"},
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       }
