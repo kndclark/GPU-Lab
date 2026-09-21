@@ -1,0 +1,60 @@
+{
+  "label": "POOL Qwen3-14B bf16 at --gpu-memory-utilization 0.92, pipeline-parallel across sm_86 + sm_120",
+  "supersedes_config_of": "bench/baseline-pool-qwen3-14b.json",
+  "relationship": "Same model, same topology, same engine. Only --gpu-memory-utilization changed, 0.85 -> 0.92. The older file stays as the 0.85 record; this one does not replace its throughput series, it replaces its kv_cache_ceiling block.",
+  "endpoint": "http://10.10.0.1:8200/v1",
+  "topology": "vLLM 0.29.0, --pipeline-parallel-size 2, ray backend, desktop RTX 3090 sm_86 + laptop RTX 5090 sm_120 over direct 2.5GbE",
+  "serve_flags": [
+    "--max-model-len 8192",
+    "--gpu-memory-utilization 0.92",
+    "--no-enable-flashinfer-autotune"
+  ],
+  "kv_cache_ceiling": {
+    "desktop_gib": 4.61,
+    "laptop_gib": 6.84,
+    "total_tokens": 60448,
+    "num_gpu_blocks": 3778,
+    "block_size": 16,
+    "engine_reported_max_concurrency_at_8192_ctx": 7.37890625,
+    "vs_085": {
+      "desktop_gib": "2.96 -> 4.61",
+      "laptop_gib": "5.29 -> 6.84",
+      "total_tokens": "38832 -> 60448 (+55.7%)",
+      "max_concurrency_at_8192_ctx": "4.74x -> 7.38x"
+    },
+    "note": "The engine's whole token budget is the SMALLER stage alone. Qwen3-14B is 40 layers / 8 KV heads / head_dim 128 = 80 KiB of KV per token per PP stage, so the desktop's 4.61 GiB is 60,424 tokens, which is the reported 60,448 to within the rounding of '4.61'. The laptop's 6.84 GiB would be ~89,700 tokens and is unreachable. Raising this flag is a desktop-side win; the laptop only caps how high the flag can go."
+  },
+  "vram_split_mib": {
+    "desktop": 21226,
+    "desktop_total": 24576,
+    "laptop": 21392,
+    "laptop_total": 24463,
+    "at_085": "desktop 19536 + laptop 19925"
+  },
+  "resolved_scheduler_config": {
+    "max_num_batched_tokens": 2048,
+    "max_num_seqs": 256,
+    "provenance": "Read from vllm/engine/arg_utils.py get_batch_defaults() in the installed 0.29.0, not from the dataclass defaults. Both cards are 24 GiB, under the 70 GiB cutoff, so the OPENAI_API_SERVER entry of the else branch applies. enable_chunked_prefill=True (confirmed in the engine's own config line) skips the max(max_model_len, ...) floor that would otherwise raise it to 8192. min(max_num_seqs * max_model_len, 2048) leaves it at 2048.",
+    "why_not_in_the_log": "The 'Defaulting max_num_batched_tokens to %d' line is logger.debug, not info. It is absent from /tmp/vllm-pool.log for that reason alone. Run with VLLM_LOGGING_LEVEL=DEBUG to see it echoed.",
+    "not_exposed_by_metrics": "/metrics carries vllm:cache_config_info only. There is no scheduler_config_info gauge in 0.29.0."
+  },
+  "finding": "KV is no longer what binds at long context; prefill width is. The 55.7% KV gain did not translate into long-context concurrency: at 8 concurrent 6,617-token requests the engine still logs 'Running: 4 reqs, Waiting: 4 reqs' even though 52,936 tokens fits inside the 60,448 budget, and wall time stays near-linear in n. With max_num_batched_tokens resolved to 2048, eight such prompts need ~26 engine steps of prefill before decode can proceed.",
+  "short_prompt_throughput_unchanged": {
+    "c8_per_request_tok_s": 24.28,
+    "c32_per_request_tok_s": 23.47,
+    "vs_085_baseline": "25.0 and 23.4 respectively",
+    "verdict": "no regression"
+  },
+  "provenance": {
+    "first_hand_this_session": [
+      "kv_cache_ceiling (engine log 'Available KV cache memory' lines + /metrics vllm:cache_config_info)",
+      "vram_split_mib (nvidia-smi on both nodes)",
+      "resolved_scheduler_config (read from the installed vLLM source in the ray-head container)"
+    ],
+    "carried_from_prior_session_not_re_measured": [
+      "short_prompt_throughput_unchanged",
+      "the 'Running: 4 / Waiting: 4' observation and the n=4/8/12 wall times behind the finding"
+    ],
+    "measurement_trap": "Long-prompt probes must use UNIQUE prompts. enable_prefix_caching=True, so repeated or identical prompts give sublinear scaling that is a cache artifact, not capacity. 1,320 unique four-digit numbers = 6,617 tokens at ~5 tokens per number."
+  }
+}

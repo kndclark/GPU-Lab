@@ -1,0 +1,82 @@
+{
+  "label": "POOL Meta-Llama-3.1-70B-Instruct GPTQ-INT4, pipeline-parallel across sm_86 + sm_120",
+  "verdict": "A 4-bit 70B DOES run pooled across these two cards, but only with --enforce-eager and at 4k context. Without --enforce-eager the engine refuses to start at all.",
+  "model": "hugging-quants/Meta-Llama-3.1-70B-Instruct-GPTQ-INT4",
+  "model_facts": {
+    "checkpoint_gib": 37.07,
+    "checkpoint_bytes": 39806124032,
+    "layers": 80,
+    "kv_heads": 8,
+    "head_dim": 128,
+    "kib_per_token_per_stage": 160,
+    "quantization": "gptq, 4 bits, group_size 128, desc_act true, sym true",
+    "note_on_the_alternative": "RedHatAI/Meta-Llama-3.1-70B-Instruct-quantized.w4a16 is the SAME quant method (quant_method gptq, 4 bits, group_size 128, desc_act true). The 'w4a16' name does not indicate a different runtime path. Either repo is interchangeable here; both are ungated and anonymously downloadable.",
+    "pp_split": "Exactly symmetric: 1480 tensors per stage, embed_tokens on stage 0, lm_head + model.norm on stage 1. Measured 'Model loading took 18.44 GiB' on BOTH stages."
+  },
+  "endpoint": "http://10.10.0.1:8200/v1",
+  "topology": "vLLM 0.29.0, --pipeline-parallel-size 2, ray backend, desktop RTX 3090 sm_86 (PP0) + laptop RTX 5090 sm_120 (PP1) over direct 2.5GbE",
+  "serve_flags": [
+    "--max-model-len 4096",
+    "--gpu-memory-utilization 0.92",
+    "--no-enable-flashinfer-autotune",
+    "--enforce-eager"
+  ],
+  "kv_cache_ceiling": {
+    "desktop_gib": 2.72,
+    "laptop_gib": 2.49,
+    "total_tokens": 16320,
+    "engine_reported_max_concurrency_at_4096_ctx": 3.98,
+    "binding_stage": "LAPTOP. This is a reversal from the Qwen3-14B pool, where the desktop bound. 2.49 GiB / 160 KiB = 16,318 tokens, which is the reported 16,320."
+  },
+  "the_enforce_eager_finding": {
+    "summary": "CUDA graph memory profiling, on by default since vLLM 0.21.0, reserves graph memory inside the gpu-memory-utilization budget BEFORE KV is allocated. On a model this close to the card it is the difference between running and not running.",
+    "with_cuda_graphs": {
+      "desktop_kv_gib": 0.44,
+      "laptop_kv_gib": 1.95,
+      "outcome": "ValueError: To serve at least one request with the model's max seq len (4096), 0.62 GiB KV cache is needed, which is larger than the available KV cache memory (0.44 GiB). Based on the available memory, the estimated maximum model length is 2864.",
+      "engine_own_words": "The current --gpu-memory-utilization=0.9200 is equivalent to --gpu-memory-utilization=0.8909 without CUDA graph memory profiling. To maintain the same effective KV cache size as before, increase --gpu-memory-utilization to 0.9491."
+    },
+    "with_enforce_eager": {
+      "desktop_kv_gib": 2.72,
+      "laptop_kv_gib": 2.49,
+      "desktop_gain_gib": 2.28
+    },
+    "why_the_gain_exceeds_the_reservation": "The 0.92 -> 0.8909 equivalence implies only ~0.69 GiB of reservation on the desktop, but --enforce-eager returned 2.28 GiB. It removes the graph capture memory and the graph memory pool as well as the profiler's reservation, not just the reservation.",
+    "alternatives_not_taken": "VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0 keeps graphs but skips the reservation; riskier, it can OOM at capture instead of refusing at startup. Raising util to the engine's suggested 0.9491 is above the laptop's practical ceiling."
+  },
+  "throughput_single_stream": {
+    "decode_tok_s_p50": 19.269,
+    "decode_tok_s_p95": 19.578,
+    "decode_tok_s_mean": 19.118,
+    "decode_cv_pct": 2.8,
+    "ttft_p50_s": 0.085,
+    "ttft_p95_s": 0.156,
+    "samples": 15,
+    "wall_s": 87.0,
+    "temp_max_c": 74.0,
+    "vs_qwen3_14b_pool": "14B pooled does 28.3 tok/s single-stream. A 5x larger model costs ~1.5x in per-token latency.",
+    "first_request_warning": "The FIRST request after load took 90.6 s for 87 tokens (~1 tok/s). That is eager-mode warmup, not steady state. Discard it. The second and third requests were 6.4 s and 6.7 s for 119 tokens."
+  },
+  "load_time": {
+    "desktop_pp0_s": 12.5,
+    "laptop_pp1_s": 124.4,
+    "filesystem": "PP0 reads EXT4 locally (it is the NFS server); PP1 pulls its 18.44 GiB over NFS4 across the 2.5GbE link",
+    "consequence": "The 300 s endpoint wait in bin/lab was not enough headroom for comfort; POOL_WAIT_SECS now exists and was set to 900 for these runs.",
+    "incidental": "vLLM disabled auto-prefetch on the desktop because the 37.07 GiB checkpoint exceeds 90% of that node's 23.74 GiB available RAM. The laptop, with 52.71 GiB, was not subject to that."
+  },
+  "headroom_at_rest": {
+    "laptop_free_mib": 506,
+    "desktop_free_mib": 1961,
+    "preflight_margin_mib": 93,
+    "note": "pool_fits passed with only 93 MiB of margin on the laptop (wanted 22045, found 22138). The laptop drives a display, so anything that takes VRAM must be closed BEFORE 'lab pool up'. Once the pool is up, vLLM's arena is already allocated and a browser can use the remaining ~500 MiB safely. POOL_GPU_UTIL=0.88 returns ~0.95 GiB on the laptop and costs roughly 16,320 -> ~10,200 tokens of budget."
+  },
+  "predictions_that_were_wrong": [
+    "Two separate estimates of desktop KV were wrong in opposite directions: 1.2-1.4 GiB predicted before the first run (actual 0.44 with graphs), then ~1.13 GiB predicted for enforce-eager (actual 2.72). The per-token arithmetic was sound both times -- 0.44 GiB / 160 KiB = 2,884 vs the engine's stated 2,864 -- but the OVERHEAD term is not predictable from the 14B's measured values. Trust the engine's 'Available KV cache memory' line, never a memory model.",
+    "The prior hand-off's '4,674 tokens with --max-num-batched-tokens 2048' and its 'DOES NOT FIT (-1.48 GiB)' were both closer than the estimates above, but still did not identify the CUDA graph reservation as the mechanism."
+  ],
+  "open": [
+    "max_num_batched_tokens was left at its resolved default (2048) for these runs; it was not tuned for the 70B.",
+    "Concurrency above 1 was not benchmarked. The engine reports 3.98x at 4k context.",
+    "Qwen3-32B-AWQ has not been compared. It needs no new download and should have several times this KV headroom."
+  ]
+}
