@@ -47,9 +47,9 @@ REPO=/home/david/gpu-lab
 # known hosts is not a fleet, and a fixed name is what lets "lab down" and
 # "lab status" recognise the pool on the node that is not driving it.
 POOL_IMAGE=gpu-lab:vllm-ray
-POOL_MODEL=Qwen/Qwen3-14B
+POOL_MODEL=${POOL_MODEL:-Qwen/Qwen3-14B}
 POOL_PORT=8200
-POOL_MAXLEN=8192
+POOL_MAXLEN=${POOL_MAXLEN:-8192}
 # Raised from 0.85 after measuring where the KV cache actually runs out. The
 # flag is global but the two cards are not symmetric, and only one of them is
 # the constraint in each direction:
@@ -66,6 +66,28 @@ POOL_MAXLEN=8192
 #
 # So this buys desktop-side KV, and the laptop is only along for the ride.
 POOL_GPU_UTIL=${POOL_GPU_UTIL:-0.92}
+# Prefill width. Empty means "leave it to vLLM", which is NOT the dataclass
+# default: arg_utils.get_batch_defaults() branches on card size, and both of
+# these cards are under the 70 GiB cutoff, so the OPENAI_API_SERVER context
+# resolves to 2048 batched tokens / 256 seqs. Chunked prefill is on, which
+# skips the max(max_model_len, ...) floor that would otherwise raise it to
+# 8192. The resolved value is logged at DEBUG, which is why it never appears
+# in /tmp/vllm-pool.log -- run with VLLM_LOGGING_LEVEL=DEBUG to see it.
+# At 2048, eight 6.6k-token prompts need 26 engine steps just to prefill, so
+# this, not KV, is what binds long-context concurrency since the 0.92 raise.
+POOL_MAX_BATCHED_TOKENS=${POOL_MAX_BATCHED_TOKENS:-}
+# DEBUG here is the only way to see the resolved scheduler config: vLLM logs
+# "Defaulting max_num_batched_tokens to N" at debug level, so it is missing
+# from an ordinary run's log no matter how hard you grep.
+POOL_LOG_LEVEL=${POOL_LOG_LEVEL:-}
+# How long to wait for the endpoint. 300s suits Qwen3-14B (~230s is normal).
+# A 70B-class model is ~2.6x the weights and the laptop stage pulls its half
+# over NFS, so it needs more; raise this rather than reading the exit 1 as a
+# failure, since the engine keeps loading in the background either way.
+POOL_WAIT_SECS=${POOL_WAIT_SECS:-300}
+# One-off serve flags, e.g. --enforce-eager when CUDA graph capture will not
+# fit in what is left after the weights.
+POOL_EXTRA_FLAGS=${POOL_EXTRA_FLAGS:-}
 DESKTOP_ADDR=10.10.0.1; DESKTOP_NIC=enp5s0
 LAPTOP_ADDR=10.10.0.2;  LAPTOP_NIC=enp129s0
 # The per-node blocks below set an idle floor for whichever node is running this
@@ -450,7 +472,7 @@ pool_fits() {
         echo "      only find $free MiB free (of $total MiB on the card). It would OOM" >&2
         echo "      partway through startup." >&2
         echo "      lower it for this run:" >&2
-        echo "        POOL_GPU_UTIL=0.85 $REPO/bin/lab pool up" >&2
+        echo "        POOL_GPU_UTIL=0.88 $REPO/bin/lab pool up" >&2
         return 1
     fi
     ok "$who: wants $want MiB, vLLM will find $free MiB free"
@@ -540,6 +562,10 @@ pool_up() {
     fi
     ok "worker : registered; head sees 2 GPUs"
 
+    local POOL_BATCH_FLAG=""
+    if [ -n "$POOL_MAX_BATCHED_TOKENS" ]; then
+        POOL_BATCH_FLAG="--max-num-batched-tokens $POOL_MAX_BATCHED_TOKENS"
+    fi
     say "$((n++))/$total  vllm serve $POOL_MODEL across both cards"
     # --no-enable-flashinfer-autotune is the whole reason this works, and it must
     # not be dropped as noise. The autotune hook is gated PER DEVICE on compute
@@ -551,11 +577,11 @@ pool_up() {
     # cross-host transport, both of which are fine. Any mixed-capability pair
     # straddling sm_90 hits this class of bug.
     on_desktop "sudo docker exec -d ray-head bash -c '
-        vllm serve $POOL_MODEL \
+        ${POOL_LOG_LEVEL:+VLLM_LOGGING_LEVEL=$POOL_LOG_LEVEL} vllm serve $POOL_MODEL \
           --pipeline-parallel-size 2 --distributed-executor-backend ray \
           --no-enable-flashinfer-autotune \
           --host 0.0.0.0 --port $POOL_PORT --max-model-len $POOL_MAXLEN \
-          --gpu-memory-utilization $POOL_GPU_UTIL \
+          --gpu-memory-utilization $POOL_GPU_UTIL $POOL_BATCH_FLAG $POOL_EXTRA_FLAGS \
           > /tmp/vllm-pool.log 2>&1'"
     ok "launched; log: ssh llm \"sudo docker exec ray-head tail -f /tmp/vllm-pool.log\""
 
@@ -563,12 +589,12 @@ pool_up() {
     local url="http://$DESKTOP_ADDR:$POOL_PORT/v1/models" served=0
     # ~230 s is normal: weights load from the NFS cache over the direct link and
     # the engine compiles on first start. The budget is deliberately well past it.
-    for _ in $(seq 1 150); do
+    for _ in $(seq 1 $(( POOL_WAIT_SECS / 2 ))); do
         curl -sf -m3 "$url" >/dev/null 2>&1 && { served=1; break; }
         sleep 2
     done
     if [ "$served" = 0 ]; then
-        echo "  $url did not answer within 5 minutes." >&2
+        echo "  $url did not answer within ${POOL_WAIT_SECS}s." >&2
         echo "    ssh llm \"sudo docker exec ray-head tail -40 /tmp/vllm-pool.log\"" >&2
         exit 1
     fi
