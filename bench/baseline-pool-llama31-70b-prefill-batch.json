@@ -1,0 +1,312 @@
+{
+  "label": "POOL Meta-Llama-3.1-70B-Instruct GPTQ-INT4, --max-num-batched-tokens sweep (companion to baseline-pool-llama31-70b-concurrency.json)",
+  "recorded": "2026-09-22",
+  "verdict": "Open item 4 is REFUTED, in the direction opposite to the one it assumed. Raising --max-num-batched-tokens does not help this pool -- it hurts twice. Going 2048 -> 4096 made a 4k-token prefill 28% slower AND cost 20% of the KV cache. Going the other way pays twice: 2048 -> 512 made the same prefill 22% faster and bought 13% more KV, with no loss of short-prompt decode throughput. The cause is pipeline overlap: prefill is split into chunks of max_num_batched_tokens, and on a 2-stage pipeline chunk k+1 occupies stage 0 while chunk k occupies stage 1. A bigger prefill batch means FEWER chunks and therefore LESS overlap.",
+  "endpoint": "http://10.10.0.1:8200/v1",
+  "model": "hugging-quants/Meta-Llama-3.1-70B-Instruct-GPTQ-INT4",
+  "topology": "vLLM 0.29.0, --pipeline-parallel-size 2, ray backend, desktop RTX 3090 sm_86 (PP0) + laptop RTX 5090 sm_120 (PP1) over direct 2.5GbE",
+  "serve_flags_common": [
+    "--max-model-len 4096",
+    "--gpu-memory-utilization 0.92",
+    "--no-enable-flashinfer-autotune",
+    "--enforce-eager"
+  ],
+  "method": {
+    "design": "Four full pool restarts, one per value of --max-num-batched-tokens (B). Predictions for B=4096 and B=1024 were written down BEFORE the first restart (scratch file predictions.md) and are reproduced under `preregistered_predictions`; both landed inside their stated range.",
+    "probe": "bench/prefill_curve.py -- single stream, max_tokens 8 so the measurement is dominated by prefill, TTFT taken from the first streamed content chunk, 3 samples per length, prompts rebuilt from freshly drawn unique random 4-digit numbers for every sample so prefix caching can never serve one.",
+    "decode_probe": "bench/bench.py (unchanged) at c=5 repeats=6 (150 samples) and c=16 repeats=2 (160 samples), plus bench/conc_probe.py for long prompts under concurrency with ignore_eos so every request emits exactly 128 tokens.",
+    "control": "The B=2048 curve was measured on the instance that had been up for 13 h before any restart, and its numbers reproduce the recorded regime C of the concurrency baseline (marginal 505-572 tok/s below 2048, ~1050 above). The pool was returned to B=2048 at the end and re-measured: 2.72/2.41 GiB and 3.86x, identical to the state it was found in.",
+    "tokenization_note": "This probe's separator makes a 4-digit number cost ~4.05 tokens, not the 3.07 of the concurrency baseline's probe (different formatting). All lengths here are the API's own usage.prompt_tokens, so the two files' x-axes are directly comparable even though their number counts are not."
+  },
+  "preregistered_predictions": {
+    "model_under_test": "Prefill is chunked at B; on a 2-stage pipeline every chunk after the first is served at roughly twice the single-chunk rate, so fewer chunks means less overlap.",
+    "B_4096": "one chunk for any prompt <= 3950 tokens, so no knee and a straight line at ~500-570 tok/s; TTFT at ~3950 tokens 7.4-7.8 s",
+    "B_4096_outcome": "CONFIRMED. No knee; marginal rate fell monotonically 573 -> 474 tok/s. TTFT 7.810 s.",
+    "B_1024": "knee moves from 2048 to 1024; marginal rate above 1024 ~900-1100 tok/s; TTFT at ~3950 tokens 4.6-5.4 s",
+    "B_1024_outcome": "CONFIRMED. Knee at 1024 (1170->1350 jumped to 1070 tok/s). TTFT 5.158 s."
+  },
+  "kv_cost_of_the_prefill_batch": {
+    "note": "Two figures per row because the stages are not symmetric; the SMALLER one binds, and the engine's 'Maximum concurrency' line is that stage's token budget divided by max_model_len.",
+    "rows": [
+      {
+        "max_num_batched_tokens": 512,
+        "kv_gib": [
+          2.74,
+          3.04
+        ],
+        "binding_gib": 2.74,
+        "engine_max_concurrency_at_4096": 4.38,
+        "kv_tokens": 17940
+      },
+      {
+        "max_num_batched_tokens": 1024,
+        "kv_gib": [
+          2.57,
+          2.93
+        ],
+        "binding_gib": 2.57,
+        "engine_max_concurrency_at_4096": 4.12,
+        "kv_tokens": 16876
+      },
+      {
+        "max_num_batched_tokens": 2048,
+        "kv_gib": [
+          2.41,
+          2.72
+        ],
+        "binding_gib": 2.41,
+        "engine_max_concurrency_at_4096": 3.86,
+        "kv_tokens": 15808,
+        "note": "the engine default here, and the configuration every earlier baseline was taken at"
+      },
+      {
+        "max_num_batched_tokens": 4096,
+        "kv_gib": [
+          1.93,
+          2.3
+        ],
+        "binding_gib": 1.93,
+        "engine_max_concurrency_at_4096": 3.09,
+        "kv_tokens": 12656
+      }
+    ],
+    "finding": "KV is monotonically decreasing in B: each doubling of the prefill batch takes activation memory out of the KV budget, and the loss accelerates (512->2048 costs 0.33 GiB, 2048->4096 costs another 0.48). So B trades directly against the concurrency ceiling established in the companion file, where ceiling = kv_tokens / (prompt_tokens + max_tokens)."
+  },
+  "prefill_curves": {
+    "units": "TTFT seconds, median of 3 cold samples; spread within a length was under 1% at every point except the smallest",
+    "shared_grid_prompt_tokens": [
+      130,
+      330,
+      690,
+      1350,
+      1970,
+      2650,
+      3450,
+      3950
+    ],
+    "by_batch_size": {
+      "512": {
+        "ttft_s": {
+          "130": 0.222,
+          "330": 0.57,
+          "690": 1.077,
+          "910": 1.266,
+          "1170": 1.618,
+          "1350": 1.772,
+          "1970": 2.466,
+          "2650": 3.283,
+          "3450": 4.145,
+          "3950": 4.736
+        },
+        "marginal_tok_s": {
+          "330": 575.9,
+          "690": 709.1,
+          "910": 1169.0,
+          "1170": 737.0,
+          "1350": 1167.3,
+          "1970": 893.8,
+          "2650": 832.9,
+          "3450": 927.2,
+          "3950": 847.3
+        }
+      },
+      "1024": {
+        "ttft_s": {
+          "130": 0.223,
+          "330": 0.572,
+          "690": 1.254,
+          "910": 1.639,
+          "1170": 2.054,
+          "1350": 2.223,
+          "1970": 2.899,
+          "2650": 3.634,
+          "3450": 4.643,
+          "3950": 5.158
+        },
+        "marginal_tok_s": {
+          "330": 573.1,
+          "690": 527.8,
+          "910": 571.4,
+          "1170": 625.5,
+          "1350": 1070.2,
+          "1970": 916.9,
+          "2650": 924.9,
+          "3450": 793.2,
+          "3950": 969.4
+        }
+      },
+      "2048": {
+        "ttft_s": {
+          "130": 0.221,
+          "330": 0.571,
+          "690": 1.255,
+          "1350": 2.562,
+          "1970": 3.769,
+          "2650": 4.494,
+          "3450": 5.247,
+          "3950": 6.081
+        },
+        "marginal_tok_s": {
+          "330": 571.9,
+          "690": 526.7,
+          "1350": 504.6,
+          "1970": 513.8,
+          "2650": 938.3,
+          "3450": 1062.1,
+          "3950": 599.8
+        }
+      },
+      "4096": {
+        "ttft_s": {
+          "130": 0.222,
+          "330": 0.571,
+          "690": 1.249,
+          "1350": 2.546,
+          "1970": 3.747,
+          "2650": 5.117,
+          "3450": 6.755,
+          "3950": 7.81
+        },
+        "marginal_tok_s": {
+          "330": 572.6,
+          "690": 531.0,
+          "1350": 508.7,
+          "1970": 516.3,
+          "2650": 496.2,
+          "3450": 488.7,
+          "3950": 473.9
+        }
+      }
+    },
+    "headline": {
+      "ttft_at_3950_prompt_tokens_s": {
+        "512": 4.736,
+        "1024": 5.158,
+        "2048": 6.081,
+        "4096": 7.81
+      },
+      "vs_default": {
+        "512": "-22.1%",
+        "1024": "-15.2%",
+        "4096": "+28.4%"
+      }
+    },
+    "finding": "The knee tracks B exactly. At B=4096 there is no knee at all and the marginal rate decays monotonically from 573 to 474 tok/s -- the pure single-chunk curve, with one pipeline stage always idle. At every smaller B the marginal rate roughly doubles once the prompt passes B, which is the second chunk overlapping the first. This is the direct causal test the companion file called for: the boundary is not a property of the model or of 2048, it MOVES when the flag moves."
+  },
+  "decode_throughput_is_unaffected": {
+    "method": "bench/bench.py, identical invocation at both batch sizes, on this session's instances.",
+    "rows": [
+      {
+        "concurrency": 5,
+        "samples": 150,
+        "B": 2048,
+        "decode_p50": 19.137,
+        "decode_mean": 17.891,
+        "wall_s": 189.1
+      },
+      {
+        "concurrency": 5,
+        "samples": 150,
+        "B": 512,
+        "decode_p50": 19.222,
+        "decode_mean": 17.421,
+        "wall_s": 221.8
+      },
+      {
+        "concurrency": 5,
+        "samples": 150,
+        "B": 2048,
+        "decode_p50": 19.16,
+        "decode_mean": 17.626,
+        "wall_s": 219.3,
+        "note": "repeat after restoring the default"
+      },
+      {
+        "concurrency": 16,
+        "samples": 160,
+        "B": 2048,
+        "decode_p50": 14.272
+      },
+      {
+        "concurrency": 16,
+        "samples": 160,
+        "B": 512,
+        "decode_p50": 14.33
+      }
+    ],
+    "finding": "No effect, in either direction, on short-prompt decode. The prefill batch does not bind when prompts are 18-40 tokens. The wall-clock and standard-deviation spread seen at B=512 (221.8 s, sd 3.2) is NOT a 512 effect: the restored default reproduced it (219.3 s, sd 3.2) against its own earlier 189.1 s / sd 1.8. Run-to-run, not configuration."
+  },
+  "long_prompts_under_concurrency": {
+    "method": "bench/conc_probe.py, unique random prompts per run, min_tokens = max_tokens = 128 with ignore_eos so every request emits exactly 128 tokens. Runs repeated 2-3x per cell; repeats agreed within 1% except where noted.",
+    "rows": [
+      {
+        "prompt_tokens": 1057,
+        "concurrency": 8,
+        "B": 2048,
+        "ttft_p50_s": 10.47,
+        "per_request_decode_tok_s": 10.97,
+        "aggregate_tok_s": [
+          46.4,
+          46.3,
+          47.2
+        ]
+      },
+      {
+        "prompt_tokens": 1057,
+        "concurrency": 8,
+        "B": 512,
+        "ttft_p50_s": 7.31,
+        "per_request_decode_tok_s": 9.91,
+        "aggregate_tok_s": [
+          50.3,
+          50.3,
+          57.0
+        ]
+      },
+      {
+        "prompt_tokens": 3857,
+        "concurrency": 4,
+        "B": 2048,
+        "ttft_p50_s": 16.24,
+        "per_request_decode_tok_s": 7.96,
+        "aggregate_tok_s": [
+          15.2,
+          15.2
+        ]
+      },
+      {
+        "prompt_tokens": 3857,
+        "concurrency": 4,
+        "B": 512,
+        "ttft_p50_s": 12.96,
+        "per_request_decode_tok_s": 7.71,
+        "aggregate_tok_s": [
+          16.9,
+          16.9
+        ]
+      }
+    ],
+    "finding": "B=512 buys 20-30% off TTFT and 8-11% on aggregate throughput, and pays 3-8% of per-request decode rate. The trade is worth taking for any long-prompt workload: the decode loss is smaller than the TTFT gain and the aggregate moves the right way. Note the 3857-token rows sit against a KV cliff -- 3857+128 = 3985 tokens per request, so at B=2048 (15,808 KV tokens) only 3.97 fit and the fourth request queues for the whole run, while at B=512 (17,940) all four fit. That cliff is a consequence of B, not a confound, but it does mean the size of the c=4 gap is specific to this prompt length."
+  },
+  "recommendation": {
+    "setting": "POOL_MAX_BATCHED_TOKENS=512 for 70B pooled serving with long prompts; leave it unset (2048) for short-prompt traffic, where it makes no measurable difference either way.",
+    "not_applied": "bin/lab's default was NOT changed. Its comment block argues the current value from the dataclass defaults and does not yet know about pipeline overlap; changing the default is a serving-config decision and a push deploys it.",
+    "proposed_diff": "POOL_MAX_BATCHED_TOKENS=${POOL_MAX_BATCHED_TOKENS:-}   ->   ${POOL_MAX_BATCHED_TOKENS:-512}, with the comment block rewritten around the overlap mechanism rather than the dataclass default.",
+    "caution": "This is measured on a 2-stage PIPELINE. The mechanism is stage overlap, so it should NOT be generalised to a single-node or tensor-parallel deployment, where chunking buys nothing and a bigger batch is the usual advice. vLLM's own tuning guide recommends >8192 for throughput; that guidance assumes no pipeline cut."
+  },
+  "open": {
+    "b_256_untested": "512 is the smallest value measured and it was still improving (2048->1024 gained 15.2%, 1024->512 a further 8.2%, so 256 might gain ~4%). It was not tested: 256 equals this deployment's resolved max_num_seqs, and colliding those two limits would confound the measurement.",
+    "qwen3_14b_not_retested": "The whole sweep is 70B-only. The 14B pool is bubble-bound rather than weight-bound, so the overlap argument probably applies to it too, but that is inference, not measurement."
+  },
+  "traps_found": {
+    "fixed_seed_prefix_cache": "The first version of conc_probe.py seeded its RNG with a constant, so every run sent byte-identical prompts and the prefix cache served them: TTFT collapsed from 10.4 s to 0.2 s and aggregate throughput doubled to 116 tok/s. An entire first round of B=512 vs B=2048 comparisons was void because one side ran warm and the other cold. The probe now seeds from the clock. This is the same artifact the companion file documents for bench.py's fixed prompt set -- it is easy to walk into twice.",
+    "cold_start_outlier": "The first request after 'lab pool up' is not representative: a c=4 full-context probe took 65.7 s wall on a freshly started engine against 33.6 s steady-state. Send one throwaway request after pool up before measuring anything.",
+    "small_sample_p50_at_c5": "bench.py at c=5 with 50 samples reported a decode p50 of 15.440 tok/s in one run and 19.2 in others -- the distribution is bimodal there and 50 samples is too few to place the median. At 150 samples it is stable at 19.14-19.22. Do not read a single 50-sample c=5 run as a regression."
+  },
+  "provenance": {
+    "driver": "595.91.07",
+    "restarts": "5 pool restarts (4096, 1024, 512, default, and a second default after the 512 battery). Each 'lab pool up' took 1m49s-3m47s.",
+    "measured_from": "laptop (10.10.0.2)",
+    "final_state": "Pool restored to the configuration it was found in: no POOL_MAX_BATCHED_TOKENS, 2.72/2.41 GiB KV, 3.86x, serving at http://10.10.0.1:8200/v1"
+  }
+}
