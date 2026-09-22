@@ -1,0 +1,375 @@
+{
+  "label": "POOL Meta-Llama-3.1-70B-Instruct GPTQ-INT4, concurrency scaling (companion to baseline-pool-llama31-70b-gptq-int4.json)",
+  "recorded": "2026-09-22",
+  "verdict": "The 70B DOES scale with concurrency, to ~600 tok/s aggregate at 128 concurrent short requests -- 31x its single-stream rate. But it saturates far earlier than the 14B: per-request rate holds flat only to c=4, where the 14B held to c=64. Separately, the engine's 'Maximum concurrency 3.86x' line was tested directly and is EXACTLY right for full-window requests (measured ceiling: 4 running) while being irrelevant to short ones (measured: 128 running, zero queueing).",
+  "endpoint": "http://10.10.0.1:8200/v1",
+  "model": "hugging-quants/Meta-Llama-3.1-70B-Instruct-GPTQ-INT4",
+  "topology": "vLLM 0.29.0, --pipeline-parallel-size 2, ray backend, desktop RTX 3090 sm_86 (PP0) + laptop RTX 5090 sm_120 (PP1) over direct 2.5GbE",
+  "serve_flags": [
+    "--max-model-len 4096",
+    "--gpu-memory-utilization 0.92",
+    "--no-enable-flashinfer-autotune",
+    "--enforce-eager"
+  ],
+  "instance_kv": {
+    "desktop_gib": 2.72,
+    "laptop_gib": 2.41,
+    "total_tokens": 15808,
+    "engine_reported_max_concurrency_at_4096": 3.86,
+    "note": "This instance served 15,808 KV tokens where the recorded baseline had 16,320. That ~3% gap is run-to-run variance, not drift; a c=1 re-measurement on this instance gave 19.624 tok/s against the baseline's 19.269, also ~2%."
+  },
+  "regime_a_short_prompts": {
+    "method": "bench/bench.py fixed prompt set (~18-40 prompt tokens), --max-tokens 128, samples = 5 * C * repeats. Identical method and sample counts to bench/baseline-pool-qwen3-14b.json so the two series are directly comparable.",
+    "aggregate_tok_s_derivation": "per_request_tok_s_p50 * concurrency, the same derivation used in the 14B series, cross-checked against vLLM's own 'Avg generation throughput' counter.",
+    "series": [
+      {
+        "concurrency": 1,
+        "samples": 15,
+        "ttft_p50_s": 0.0862,
+        "ttft_p95_s": 0.1324,
+        "per_request_tok_s_p50": 19.624,
+        "aggregate_tok_s": 19.6,
+        "server_side_tok_s": null,
+        "temp_max_c_laptop": 67
+      },
+      {
+        "concurrency": 2,
+        "samples": 20,
+        "ttft_p50_s": 0.1122,
+        "ttft_p95_s": 0.1477,
+        "per_request_tok_s_p50": 19.355,
+        "aggregate_tok_s": 38.7,
+        "server_side_tok_s": 38.7,
+        "temp_max_c_laptop": 69
+      },
+      {
+        "concurrency": 3,
+        "samples": 30,
+        "ttft_p50_s": 0.132,
+        "ttft_p95_s": 0.2074,
+        "per_request_tok_s_p50": 19.402,
+        "aggregate_tok_s": 58.2,
+        "server_side_tok_s": null,
+        "temp_max_c_laptop": 69.0
+      },
+      {
+        "concurrency": 4,
+        "samples": 40,
+        "ttft_p50_s": 0.1282,
+        "ttft_p95_s": 0.19,
+        "per_request_tok_s_p50": 19.156,
+        "aggregate_tok_s": 76.6,
+        "server_side_tok_s": 76.4,
+        "temp_max_c_laptop": 70
+      },
+      {
+        "concurrency": 5,
+        "samples": 50,
+        "ttft_p50_s": 0.1335,
+        "ttft_p95_s": 0.219,
+        "per_request_tok_s_p50": 19.241,
+        "aggregate_tok_s": 96.2,
+        "server_side_tok_s": null,
+        "temp_max_c_laptop": 68.0
+      },
+      {
+        "concurrency": 6,
+        "samples": 60,
+        "ttft_p50_s": 0.1338,
+        "ttft_p95_s": 0.181,
+        "per_request_tok_s_p50": 15.344,
+        "aggregate_tok_s": 92.1,
+        "server_side_tok_s": null,
+        "temp_max_c_laptop": 71.0
+      },
+      {
+        "concurrency": 8,
+        "samples": 40,
+        "ttft_p50_s": 0.1377,
+        "ttft_p95_s": 0.2637,
+        "per_request_tok_s_p50": 15.199,
+        "aggregate_tok_s": 121.6,
+        "server_side_tok_s": 120.0,
+        "temp_max_c_laptop": 70
+      },
+      {
+        "concurrency": 16,
+        "samples": 80,
+        "ttft_p50_s": 0.2064,
+        "ttft_p95_s": 0.5148,
+        "per_request_tok_s_p50": 14.208,
+        "aggregate_tok_s": 227.3,
+        "server_side_tok_s": 223.8,
+        "temp_max_c_laptop": 72
+      },
+      {
+        "concurrency": 32,
+        "samples": 160,
+        "ttft_p50_s": 0.3065,
+        "ttft_p95_s": 0.8832,
+        "per_request_tok_s_p50": 11.272,
+        "aggregate_tok_s": 360.7,
+        "server_side_tok_s": 358.9,
+        "temp_max_c_laptop": 77
+      },
+      {
+        "concurrency": 64,
+        "samples": 320,
+        "ttft_p50_s": 0.486,
+        "ttft_p95_s": 1.7552,
+        "per_request_tok_s_p50": 7.275,
+        "aggregate_tok_s": 465.6,
+        "server_side_tok_s": 524.8,
+        "temp_max_c_laptop": 77
+      },
+      {
+        "concurrency": 128,
+        "samples": 640,
+        "ttft_p50_s": 0.7756,
+        "ttft_p95_s": 2.6076,
+        "per_request_tok_s_p50": 4.632,
+        "aggregate_tok_s": 592.9,
+        "server_side_tok_s": 601.6,
+        "temp_max_c_laptop": 73
+      }
+    ],
+    "crosscheck": "Derived and server-side agree within 1.6% at every level except c=64 (11.3%), where per-request spread was widest (cv 7.2% against <2% elsewhere) so the p50 under-represents the batch. Where they disagree, trust the server counter.",
+    "no_queueing": "Zero preemptions across the entire sweep, and 'Waiting' never exceeded 0 at any concurrency including 128. KV usage peaked at 90.7%. The pool never had to queue a short request.",
+    "prefix_cache_caveat": "enable_prefix_caching=True and bench.py submits each of its 5 prompts C times, so prefill is largely cache-served at high C -- the hit rate rose from 45.1% to 86.6% over the sweep. This flatters TTFT and removes prefill work. It does NOT affect decode rate, which is the headline number, and the 14B series carries the identical artifact, so the comparison stands. Regime B below has no such artifact.",
+    "the_knee": "Per-request decode holds 19.2-19.6 tok/s from c=1 through c=5, then breaks at c=6 (15.344). Aggregate therefore PEAKS at c=5 (96.2 tok/s) and DIPS at c=6 (92.1) before resuming its climb. c=5 is the largest batch that costs nothing per request. Rows for c=3,5,6 were measured with repeats=2 in a separate pass after the main sweep; no server-side counter was captured for them."
+  },
+  "regime_b_full_context": {
+    "method": "bench/-external probe, prompts built from UNIQUE random 4-digit numbers (never repeated within or across levels, so prefix caching cannot serve them), 3,793 prompt tokens + 128 max output = 3,921 of the 4,096 window. C requests issued simultaneously per level.",
+    "purpose": "Test the engine's 'Maximum concurrency for 4,096 tokens per request: 3.86x' line directly. docs/phase1-serving-plane.md establishes that line is arithmetic (KV_tokens / max_model_len), not a measurement.",
+    "calibration": "4-digit numbers tokenize at ~3.07 tokens each here, not the ~5 assumed in the hand-off's KV-probe note. 1,238 numbers produced 3,793 prompt tokens.",
+    "series": [
+      {
+        "concurrency": 1,
+        "ttft_p50_s": 5.745,
+        "per_request_tok_s_p50": 18.89,
+        "aggregate_tok_s_end_to_end": 10.3,
+        "wall_s": 12.5
+      },
+      {
+        "concurrency": 2,
+        "ttft_p50_s": 9.022,
+        "per_request_tok_s_p50": 11.76,
+        "aggregate_tok_s_end_to_end": 12.3,
+        "wall_s": 20.7
+      },
+      {
+        "concurrency": 3,
+        "ttft_p50_s": 12.93,
+        "per_request_tok_s_p50": 9.43,
+        "aggregate_tok_s_end_to_end": 14.5,
+        "wall_s": 26.4
+      },
+      {
+        "concurrency": 4,
+        "ttft_p50_s": 16.049,
+        "per_request_tok_s_p50": 8.25,
+        "aggregate_tok_s_end_to_end": 15.9,
+        "wall_s": 32.1
+      },
+      {
+        "concurrency": 5,
+        "ttft_p50_s": 19.195,
+        "per_request_tok_s_p50": 6.53,
+        "aggregate_tok_s_end_to_end": 14.1,
+        "wall_s": 45.4
+      },
+      {
+        "concurrency": 6,
+        "ttft_p50_s": 21.34,
+        "per_request_tok_s_p50": 6.19,
+        "aggregate_tok_s_end_to_end": 14.3,
+        "wall_s": 53.7
+      },
+      {
+        "concurrency": 8,
+        "ttft_p50_s": 31.105,
+        "per_request_tok_s_p50": 6.08,
+        "aggregate_tok_s_end_to_end": 15.6,
+        "wall_s": 65.5
+      }
+    ],
+    "finding": "The engine's 3.86x is CONFIRMED, not debunked. 'Running' never exceeded 4 at any offered concurrency; KV pegged at 95.8-98.7% and every further request sat in 'Waiting' (observed up to 5 waiting). Aggregate end-to-end throughput plateaus at ~14-16 tok/s from c=3 onward: offering more concurrency past 4 buys nothing and only inflates TTFT, which climbs 5.7s -> 31.1s.",
+    "note_on_the_two_aggregates": "aggregate_tok_s_end_to_end divides completion tokens by total wall INCLUDING prefill and queue time, so it is lower than vLLM's own counter (peak 50.5 tok/s), which measures generation-phase throughput over a 10s window. Both are honest answers to different questions; the end-to-end number is what a client experiences.",
+    "ttft_warning": "At full context TTFT is seconds, not milliseconds, even at c=1 (5.7s). Prefill of ~3,800 tokens is chunked at max_num_batched_tokens=2048 and crosses the pipeline cut. Do not quote the short-prompt TTFT (0.086s) as the model's latency for long inputs."
+  },
+  "comparison_to_qwen3_14b_pool": {
+    "shape": "The 14B holds per-request rate ~22-25 tok/s all the way to c=64 and reaches ~2030 tok/s at 128. The 70B holds only to c=4 (19.2 tok/s), is down 23% by c=8, and tops out near 600 tok/s at 128.",
+    "ratio": "At c=128 the 14B delivers ~3.4x the 70B's aggregate throughput. At c=1 it delivers 1.44x.",
+    "why": "The 14B at low concurrency is bubble-bound -- it has spare compute, so batching fills pipeline gaps almost for free. The 70B is weight-bound: 5x the parameters must be streamed per forward pass, so batching buys much less before compute saturates.",
+    "consequence": "Both are throughput servers, but the 70B's useful batching window is roughly c=4..32. Past 32 it is buying aggregate throughput by making every individual request slower than a per-node 14B would be."
+  },
+  "recommendation": "Unchanged from the prior baseline: keep the 70B opt-in via POOL_MODEL rather than making it the pool default. This series does not reverse that -- it quantifies it. The 70B is worth the pool when the job needs 70B-class quality and can batch 4-32 requests; the 14B remains the better throughput server, and a per-node model remains the better latency server.",
+  "provenance": {
+    "driver": "595.91.07",
+    "instance_started": "2026-09-22T02:26:36Z",
+    "measured_from": "laptop (10.10.0.2); bench.py samples the LOCAL GPU, so temp_max_c is the laptop's, recorded here explicitly because the prior baseline did not say which node its 74 C came from",
+    "desktop_peak_observed": "80 C, 349 W during the c=5 soak (see regime_e); the earlier per-run desktop figures were spot reads taken after each run finished, so they understate peaks.",
+    "pool_untouched": "The pool was not restarted, reconfigured or torn down for any of this. Every number comes from the instance that was left up overnight."
+  },
+  "regime_c_prefill_scaling": {
+    "method": "Single stream, max_tokens 8 so the measurement is dominated by prefill. Prompts built from unique random digits so prefix caching cannot serve any of them.",
+    "series": [
+      {
+        "prompt_tokens": 77,
+        "ttft_s": 0.174,
+        "prefill_tok_s_cumulative": 443.7
+      },
+      {
+        "prompt_tokens": 227,
+        "ttft_s": 0.461,
+        "prefill_tok_s_cumulative": 492.1
+      },
+      {
+        "prompt_tokens": 497,
+        "ttft_s": 0.941,
+        "prefill_tok_s_cumulative": 527.9
+      },
+      {
+        "prompt_tokens": 1007,
+        "ttft_s": 1.879,
+        "prefill_tok_s_cumulative": 535.9
+      },
+      {
+        "prompt_tokens": 1997,
+        "ttft_s": 3.827,
+        "prefill_tok_s_cumulative": 521.9
+      },
+      {
+        "prompt_tokens": 2987,
+        "ttft_s": 4.793,
+        "prefill_tok_s_cumulative": 623.2
+      },
+      {
+        "prompt_tokens": 3761,
+        "ttft_s": 5.713,
+        "prefill_tok_s_cumulative": 658.3
+      }
+    ],
+    "finding": "Marginal prefill rate roughly DOUBLES once the prompt crosses 2048 tokens. Below the boundary the marginal rate is 508-563 tok/s (77->227: 523, 227->497: 563, 497->1007: 544, 1007->1997: 508); above it it is 841-1025 tok/s (1997->2987: 1025, 2987->3761: 841). 2048 is max_num_batched_tokens, so a prompt longer than that is split into chunks -- and on a PIPELINE-PARALLEL deployment chunking is a win, because chunk N+1 can occupy stage 0 while chunk N occupies stage 1. Below the boundary one stage is always idle.",
+    "consequence": "This is an argument FOR raising --max-num-batched-tokens cautiously, not against it: the open item assumed a larger prefill batch would help, but on this topology a larger batch means FEWER chunks and therefore LESS pipeline overlap. The measurement to run before changing it is this same curve at a different value, not a throughput bench.",
+    "caveat": "Single sample per length, single stream. The trend across seven points is consistent but no spread was measured."
+  },
+  "open_items_addressed": {
+    "hand_off_item_1": "ANSWERED. Concurrency above 1 is now measured for both short and full-context requests.",
+    "hand_off_item_4": "PARTIALLY INFORMED, not done. --max-num-batched-tokens was NOT changed (that needs a pool restart). Regime C gives the prefill curve at the current value of 2048 and suggests raising it may HURT on this topology."
+  },
+  "regime_d_mid_context_rag": {
+    "method": "Same unique-random-digit prompts as regime B, sized to 1,039 prompt tokens (+128 out = 1,167 of 4,096) -- the realistic RAG / long-chat case that sits between regimes A and B. C requests issued simultaneously per level.",
+    "series": [
+      {
+        "concurrency": 1,
+        "ttft_p50_s": 1.869,
+        "per_request_tok_s_p50": 19.28,
+        "aggregate_tok_s_end_to_end": 15.1,
+        "wall_s": 8.5
+      },
+      {
+        "concurrency": 2,
+        "ttft_p50_s": 2.862,
+        "per_request_tok_s_p50": 17.0,
+        "aggregate_tok_s_end_to_end": 24.5,
+        "wall_s": 10.5
+      },
+      {
+        "concurrency": 4,
+        "ttft_p50_s": 5.782,
+        "per_request_tok_s_p50": 13.62,
+        "aggregate_tok_s_end_to_end": 33.8,
+        "wall_s": 15.1
+      },
+      {
+        "concurrency": 6,
+        "ttft_p50_s": 7.244,
+        "per_request_tok_s_p50": 11.89,
+        "aggregate_tok_s_end_to_end": 42.2,
+        "wall_s": 18.2
+      },
+      {
+        "concurrency": 8,
+        "ttft_p50_s": 8.772,
+        "per_request_tok_s_p50": 10.21,
+        "aggregate_tok_s_end_to_end": 48.1,
+        "wall_s": 21.3
+      },
+      {
+        "concurrency": 12,
+        "ttft_p50_s": 11.827,
+        "per_request_tok_s_p50": 8.16,
+        "aggregate_tok_s_end_to_end": 55.9,
+        "wall_s": 27.5
+      },
+      {
+        "concurrency": 16,
+        "ttft_p50_s": 14.377,
+        "per_request_tok_s_p50": 5.84,
+        "aggregate_tok_s_end_to_end": 46.5,
+        "wall_s": 44.0
+      }
+    ],
+    "engine_observed": {
+      "max_running": 14,
+      "max_waiting": 8,
+      "max_kv_usage_pct": 93.8
+    },
+    "finding": "Ceiling is 14 concurrent, and aggregate throughput PEAKS at c=12 (55.9 tok/s) then FALLS at c=16 (46.5) once requests start queueing. For 1k-token prompts, offering more than ~12 concurrent requests makes the system strictly worse: lower aggregate throughput AND higher TTFT."
+  },
+  "unified_finding": {
+    "rule": "Across every regime measured with UNIQUE prompts, the concurrency ceiling is exactly the KV arithmetic: ceiling = 15,808 KV tokens / (prompt_tokens + max_tokens). Full context 3,921/req -> predicted 4.03, measured 4. Mid context 1,167/req -> predicted 13.5, measured 14. The engine's 'Maximum concurrency 3.86x' line is this same formula evaluated at the 4,096 worst case, and it is CORRECT -- it simply answers the full-window question, which is the least representative case for real traffic.",
+    "why_regime_a_exceeds_it": "Regime A ran 128 concurrent short requests with Waiting=0 and KV at only 90.7%, which the formula alone would not permit (128 x ~170 = 21,760 > 15,808). The reason is prefix caching: bench.py reuses 5 distinct prompts, so the many copies SHARE cached KV blocks rather than each paying full freight. Repeated prompts therefore raise the real concurrency ceiling well above the arithmetic. This is a genuine production effect for workloads with shared system prompts -- not only a benchmark artifact -- but it must not be assumed for unique traffic.",
+    "practical_guidance": "Pick concurrency from prompt length, not from a single number. Short/shared-prefix traffic: scale to 128+, aggregate ~600 tok/s. 1k-token RAG: cap at ~12, aggregate ~56 tok/s. Full 4k window: cap at 4, aggregate ~16 tok/s. Past each ceiling, throughput FALLS and TTFT climbs -- there is no benefit to over-offering."
+  },
+  "regime_e_sustained_soak": {
+    "method": "bench.py at c=5 (the measured optimum), repeats=20, max_tokens 128 -> 500 samples over 643.1 s of continuous load. Both nodes sampled every 15 s for the duration; 43 paired samples.",
+    "purpose": "docs/phase1-serving-plane.md bans single samples because the 14B drifted 177.6 -> 175.9 tok/s as the card warmed. No equivalent existed for the 70B.",
+    "result": {
+      "samples": 500,
+      "wall_s": 643.1,
+      "ttft_p50_s": 0.111,
+      "ttft_p95_s": 0.219,
+      "decode_tok_s_p50": 19.116,
+      "decode_tok_s_p95": 19.226,
+      "decode_tok_s_mean": 17.603,
+      "decode_cv_pct": 10.6
+    },
+    "finding": "NO thermal degradation. 19.116 tok/s p50 over 10.7 minutes against 19.241 in the short c=5 run -- a 0.65% difference, well inside run-to-run variance. The 70B pool is stable under sustained load; nothing needs to be discounted for soak.",
+    "thermals": {
+      "laptop": {
+        "temp_c_min_max": [
+          53,
+          71
+        ],
+        "steady_state_c": [
+          68,
+          71
+        ],
+        "peak_power_w": 126,
+        "sm_mhz_steady": [
+          1822,
+          2497
+        ]
+      },
+      "desktop": {
+        "temp_c_min_max": [
+          56,
+          80
+        ],
+        "steady_state_c": [
+          72,
+          80
+        ],
+        "peak_power_w": 349,
+        "sm_mhz_steady": [
+          1770,
+          1920
+        ]
+      },
+      "finding": "The DESKTOP is the hot node, not the laptop. It reached 80 C and 349 W while the laptop sat at 71 C and drew only 126 W of its 175 W limit. This matches training/run.sh's stated reasoning (the desktop sustains 400 W, the laptop throttles at 175 W) and means the laptop is NOT the thermal constraint during pooled inference."
+    },
+    "harness_gap_found": "bench.py's gpu_state() samples the LOCAL GPU only, and its 83 C 'thermally poisoned' warning therefore describes whichever node bench.py runs on. Benching the pool from the laptop, it reported 'max during run 71 C' while the desktop was at 80 C -- 3 C from the threshold. The warning is structurally blind to the remote pipeline stage. Every pool number in this file and in the prior baseline carries laptop-side temps only; the desktop figures here came from a separate sampler. NOT FIXED -- flagged only, since changing bench.py would alter a harness the existing baselines depend on."
+  }
+}
