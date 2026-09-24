@@ -66,16 +66,29 @@ POOL_MAXLEN=${POOL_MAXLEN:-8192}
 #
 # So this buys desktop-side KV, and the laptop is only along for the ride.
 POOL_GPU_UTIL=${POOL_GPU_UTIL:-0.92}
-# Prefill width. Empty means "leave it to vLLM", which is NOT the dataclass
-# default: arg_utils.get_batch_defaults() branches on card size, and both of
-# these cards are under the 70 GiB cutoff, so the OPENAI_API_SERVER context
-# resolves to 2048 batched tokens / 256 seqs. Chunked prefill is on, which
-# skips the max(max_model_len, ...) floor that would otherwise raise it to
-# 8192. The resolved value is logged at DEBUG, which is why it never appears
-# in /tmp/vllm-pool.log -- run with VLLM_LOGGING_LEVEL=DEBUG to see it.
-# At 2048, eight 6.6k-token prompts need 26 engine steps just to prefill, so
-# this, not KV, is what binds long-context concurrency since the 0.92 raise.
-POOL_MAX_BATCHED_TOKENS=${POOL_MAX_BATCHED_TOKENS:-}
+# Prefill width, and on a pipeline SMALLER is better -- the opposite of vLLM's
+# tuning guide, which assumes no pipeline cut. Prefill is chunked at this many
+# tokens, and with two stages chunk k+1 runs on the desktop while chunk k runs
+# on the laptop. A prompt that fits in one chunk leaves one card idle for its
+# whole prefill; past the chunk width the marginal prefill rate roughly
+# doubles. A narrower chunk reaches that overlap sooner, and its smaller
+# activation buffers leave more of the budget for KV. Measured on the 70B at
+# maxlen 4096 (bench/baseline-pool-llama31-70b-prefill-batch.json):
+#
+#   batched tokens            512     1024    2048    4096
+#   TTFT, 3,950-token prompt  4.74 s  5.16 s  6.08 s  7.81 s
+#   KV, in 4,096-token seqs   4.38x   4.12x   3.86x   3.09x
+#
+# Short-prompt decode did not move at 5, 16 or 128 concurrent requests.
+# Omitting the flag is NOT the dataclass default:
+# arg_utils.get_batch_defaults() branches on card size, and both cards are
+# under its 70 GiB cutoff, so vLLM resolves 2048 batched tokens / 256 seqs
+# -- set 2048 here to get that back. 256 is also the floor: vLLM refuses a
+# value below max_num_seqs. Untested on the 14B: with 5x fewer
+# parameters per chunk, the fixed cost of each step (the hop across the
+# link, scheduling, eager kernel launches) is a bigger share, so its best
+# width may be larger. Run bench/prefill_curve.py before trusting 512 there.
+POOL_MAX_BATCHED_TOKENS=${POOL_MAX_BATCHED_TOKENS:-512}
 # DEBUG here is the only way to see the resolved scheduler config: vLLM logs
 # "Defaulting max_num_batched_tokens to N" at debug level, so it is missing
 # from an ordinary run's log no matter how hard you grep.

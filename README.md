@@ -131,7 +131,10 @@ do not assume the smaller card is always the constraint.
 opposite directions. Start the engine and read its own `Available KV cache memory`
 line; it is the only number worth trusting.
 
-Serve parameters are environment overrides, all defaulting to existing behaviour:
+Serve parameters are environment overrides. All default to existing behaviour
+except `POOL_MAX_BATCHED_TOKENS`, which defaults to 512 rather than vLLM's resolved
+2048, because a narrower prefill chunk overlaps the two pipeline stages sooner
+(measured in [bench/](bench/); the reasoning is in `bin/lab`):
 
     POOL_MODEL  POOL_MAXLEN  POOL_GPU_UTIL  POOL_MAX_BATCHED_TOKENS
     POOL_LOG_LEVEL  POOL_WAIT_SECS  POOL_EXTRA_FLAGS
