@@ -288,25 +288,104 @@
     ],
     "finding": "B=512 buys 20-30% off TTFT and 8-11% on aggregate throughput, and pays 3-8% of per-request decode rate. The trade is worth taking for any long-prompt workload: the decode loss is smaller than the TTFT gain and the aggregate moves the right way. Note the 3857-token rows sit against a KV cliff -- 3857+128 = 3985 tokens per request, so at B=2048 (15,808 KV tokens) only 3.97 fit and the fourth request queues for the whole run, while at B=512 (17,940) all four fit. That cliff is a consequence of B, not a confound, but it does mean the size of the c=4 gap is specific to this prompt length."
   },
+  "high_concurrency_short_prompts_at_512": {
+    "recorded": "2026-09-23",
+    "why": "The one regime the sweep had not covered before 512 became bin/lab's default: the 70B's peak-throughput workload, 128 concurrent short requests. The 2048 figures are the c=128 row of baseline-pool-llama31-70b-concurrency.json.",
+    "instance": "Fresh 'lab pool up' with POOL_MAX_BATCHED_TOKENS UNSET, so bin/lab's new default supplied it; the log's non-default args show 'max_num_batched_tokens': 512. KV 3.04 GiB desktop / 2.58 GiB laptop, 16,912 tokens, 4.13x.",
+    "method": "bench/bench.py --concurrency 128 --repeats 1 --max-tokens 128 (640 samples, the same invocation as the 2048 row), after one throwaway request. server_side = median of the 'Avg generation throughput' 10 s windows with Running >= 100 (13 windows; mean 523.6 is dragged down by the ramp-up window). Board power sampled at 1 Hz on both nodes with nvidia-smi.",
+    "preregistered": [
+      "Written 2026-09-23T19:15:21-06:00, before the c=128 run at B=512.",
+      "Baseline (B=2048, bench/baseline-pool-llama31-70b-concurrency.json, c=128, 640 samples):",
+      "  per-request p50 4.632, aggregate 592.9 derived / 601.6 server, TTFT p50 0.776 p95 2.608,",
+      "  Waiting max 0, KV peak 90.7%.",
+      "Predictions at B=512:",
+      "  1. Engine reports ~2.74 GiB binding-stage KV and ~4.38x (reproduces last session's B=512 instance).",
+      "  2. Aggregate within +/-5% of baseline: derived 563-623, server 572-632. Reason: ~64 decode",
+      "     tokens per microbatch at c=128, far under 512; prompts are 18-40 tokens, mostly prefix-cached.",
+      "  3. Waiting max 0; KV peak BELOW 90.7% (bigger KV pool).",
+      "  4. TTFT p50 within noise; p95 same or higher (initial 128-request burst prefills in narrower chunks).",
+      "Decision rule: aggregate >5% below baseline => do NOT conclude; run a same-day B=2048 control first."
+    ],
+    "results": [
+      {
+        "metric": "per_request_decode_p50_tok_s",
+        "B_512": 4.65,
+        "B_2048": 4.632
+      },
+      {
+        "metric": "aggregate_derived_tok_s",
+        "B_512": 595.2,
+        "B_2048": 592.9
+      },
+      {
+        "metric": "aggregate_server_side_tok_s",
+        "B_512": 584.7,
+        "B_2048": 601.6
+      },
+      {
+        "metric": "ttft_p50_s",
+        "B_512": 0.852,
+        "B_2048": 0.7756
+      },
+      {
+        "metric": "ttft_p95_s",
+        "B_512": 2.598,
+        "B_2048": 2.6076
+      },
+      {
+        "metric": "waiting_max",
+        "B_512": 0,
+        "B_2048": 0
+      },
+      {
+        "metric": "kv_usage_peak_pct",
+        "B_512": 85.2,
+        "B_2048": 90.7
+      }
+    ],
+    "outcomes": {
+      "1_kv": "MISSED. 4.13x, not ~4.38x. The desktop stage gained as expected (3.04 GiB); the laptop stage came up ~160 MiB short of the 2026-09-22 512 instance (2.58 vs 2.74 GiB). Still 7% more KV than the 2048 instance it replaced (16,912 vs 15,808 tokens). Cause unconfirmed. vLLM charges any device-wide memory growth during its load to its own overhead (vllm/utils/mem_utils.py: cuda_memory = total - free), so another GPU client on the laptop's display card can shrink KV silently; but the only new client found, a Files window (65 MiB), launched 42 s before ray-worker started, which argues against it.",
+      "2_aggregate": "CONFIRMED. +0.4% derived, -2.8% server-side, both inside +/-5%. The control-run rule did not trigger.",
+      "3_queueing": "CONFIRMED. Waiting 0 throughout; KV peak 85.2% against 90.7%.",
+      "4_ttft": "PARTLY. p95 unchanged (2.598 vs 2.608 s). p50 rose 10% (0.852 vs 0.776 s), which was not predicted. Likely mechanism: bench.py runs at temperature 0, so the 128 copies of a prompt finish together and their replacements arrive as one wave, whose prefill takes several 512-token steps instead of one 2048-token step. The server log shows the waves: generation dips to 437-446 tok/s in the windows where prompt throughput jumps to 117-156. 76 ms on requests that take ~28 s. One run, no same-day control."
+    },
+    "verdict": "512 costs nothing measurable at the 70B's peak-throughput workload.",
+    "power_w": {
+      "laptop": {
+        "idle_model_loaded": 36.2,
+        "run_mean": 126.2,
+        "run_max": 168.6,
+        "temp_max_c": 82
+      },
+      "desktop": {
+        "idle_model_loaded": 105.3,
+        "run_mean": 303.0,
+        "run_max": 340.1,
+        "temp_max_c": 73
+      },
+      "note": "GPU board power only; wall draw is higher. ~0.73 J per generated token at c=128 (429 W / ~590 tok/s). The laptop spent 32 of 162 s at >= 80 C, peaking at 82 C, under bench.py's 83 C poison line. At c=128 the laptop, not the desktop, was the hotter card."
+    }
+  },
   "recommendation": {
-    "setting": "POOL_MAX_BATCHED_TOKENS=512 for 70B pooled serving with long prompts; leave it unset (2048) for short-prompt traffic, where it makes no measurable difference either way.",
-    "not_applied": "bin/lab's default was NOT changed. Its comment block argues the current value from the dataclass defaults and does not yet know about pipeline overlap; changing the default is a serving-config decision and a push deploys it.",
-    "proposed_diff": "POOL_MAX_BATCHED_TOKENS=${POOL_MAX_BATCHED_TOKENS:-}   ->   ${POOL_MAX_BATCHED_TOKENS:-512}, with the comment block rewritten around the overlap mechanism rather than the dataclass default.",
-    "caution": "This is measured on a 2-stage PIPELINE. The mechanism is stage overlap, so it should NOT be generalised to a single-node or tensor-parallel deployment, where chunking buys nothing and a bigger batch is the usual advice. vLLM's own tuning guide recommends >8192 for throughput; that guidance assumes no pipeline cut."
+    "setting": "POOL_MAX_BATCHED_TOKENS=512 for 70B pooled serving. Short-prompt traffic is indifferent to it (measured at c=5, 16 and 128).",
+    "caution": "This is measured on a 2-stage PIPELINE. The mechanism is stage overlap, so it should NOT be generalised to a single-node or tensor-parallel deployment, where chunking buys nothing and a bigger batch is the usual advice. vLLM's own tuning guide recommends >8192 for throughput; that guidance assumes no pipeline cut.",
+    "applied": "2026-09-23: bin/lab now defaults POOL_MAX_BATCHED_TOKENS to 512, with the comment block rewritten around stage overlap; set 2048 explicitly to get vLLM's own resolution back. The 14B is untested at 512 and the comment says so."
   },
   "open": {
     "b_256_untested": "512 is the smallest value measured and it was still improving (2048->1024 gained 15.2%, 1024->512 a further 8.2%, so 256 might gain ~4%). It was not tested: 256 equals this deployment's resolved max_num_seqs, and colliding those two limits would confound the measurement.",
-    "qwen3_14b_not_retested": "The whole sweep is 70B-only. The 14B pool is bubble-bound rather than weight-bound, so the overlap argument probably applies to it too, but that is inference, not measurement."
+    "qwen3_14b_not_retested": "The whole sweep is 70B-only. The 14B pool is bubble-bound rather than weight-bound, so the overlap argument probably applies to it too, but that is inference, not measurement.",
+    "laptop_kv_shortfall": "The 2026-09-23 512 instance's laptop stage had ~160 MiB less KV than the 2026-09-22 one (see high_concurrency_short_prompts_at_512.outcomes.1_kv). Unexplained; only one instance of each."
   },
   "traps_found": {
     "fixed_seed_prefix_cache": "The first version of conc_probe.py seeded its RNG with a constant, so every run sent byte-identical prompts and the prefix cache served them: TTFT collapsed from 10.4 s to 0.2 s and aggregate throughput doubled to 116 tok/s. An entire first round of B=512 vs B=2048 comparisons was void because one side ran warm and the other cold. The probe now seeds from the clock. This is the same artifact the companion file documents for bench.py's fixed prompt set -- it is easy to walk into twice.",
     "cold_start_outlier": "The first request after 'lab pool up' is not representative: a c=4 full-context probe took 65.7 s wall on a freshly started engine against 33.6 s steady-state. Send one throwaway request after pool up before measuring anything.",
-    "small_sample_p50_at_c5": "bench.py at c=5 with 50 samples reported a decode p50 of 15.440 tok/s in one run and 19.2 in others -- the distribution is bimodal there and 50 samples is too few to place the median. At 150 samples it is stable at 19.14-19.22. Do not read a single 50-sample c=5 run as a regression."
+    "small_sample_p50_at_c5": "bench.py at c=5 with 50 samples reported a decode p50 of 15.440 tok/s in one run and 19.2 in others -- the distribution is bimodal there and 50 samples is too few to place the median. At 150 samples it is stable at 19.14-19.22. Do not read a single 50-sample c=5 run as a regression.",
+    "bench_py_temp_is_a_spot_read": "bench.py's temp_max is read once, at the end of each pass. At c=128 it reported 60 C while 1 Hz sampling saw 82 C: the last seconds of a pass run only the stragglers, and a laptop card cools fast. Sample continuously when temperature matters."
   },
   "provenance": {
     "driver": "595.91.07",
-    "restarts": "5 pool restarts (4096, 1024, 512, default, and a second default after the 512 battery). Each 'lab pool up' took 1m49s-3m47s.",
+    "restarts": "5 pool restarts (4096, 1024, 512, default, and a second default after the 512 battery). Each 'lab pool up' took 1m49s-3m47s. Plus one on 2026-09-23 for the c=128 check, 'lab pool up' with the variable unset.",
     "measured_from": "laptop (10.10.0.2)",
-    "final_state": "Pool restored to the configuration it was found in: no POOL_MAX_BATCHED_TOKENS, 2.72/2.41 GiB KV, 3.86x, serving at http://10.10.0.1:8200/v1"
+    "final_state": "2026-09-23: pool left UP on bin/lab's 512 default (POOL_MAX_BATCHED_TOKENS unset), 3.04/2.58 GiB KV, 4.13x, serving at http://10.10.0.1:8200/v1"
   }
 }
