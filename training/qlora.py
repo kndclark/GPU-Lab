@@ -113,6 +113,13 @@ def main():
     ap.add_argument("--max-len", type=int, default=1024)
     ap.add_argument("--rank", type=int, default=16)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--dataset", default=None,
+                    help="records JSON; default training/research_dataset.json")
+    ap.add_argument("--save-strategy", default="no", choices=("no", "epoch"),
+                    help="epoch keeps an adapter checkpoint per epoch")
+    ap.add_argument("--show-encoding", type=int, default=0, metavar="N",
+                    help="print N encoded records per thinking mode with the trained "
+                         "spans marked, then exit before loading the model")
     ap.add_argument("--no-fp32-upcast", action="store_true",
                     help="skip PEFT's fp32 cast; needed for a 32B to fit on 24 GB")
     args = ap.parse_args()
@@ -127,7 +134,10 @@ def main():
     # ---- data ----
     from tools import TOOLS
 
-    records = proof_dataset.build(seed=args.seed)
+    records = proof_dataset.build(seed=args.seed, path=args.dataset)
+    # Dataset.from_list takes its columns from the first record only.
+    for r in records:
+        r.setdefault("thinking", "default")
     print(f"dataset: {len(records)} research trajectories", flush=True)
 
     tok = AutoTokenizer.from_pretrained(args.model)
@@ -136,6 +146,12 @@ def main():
 
     assistant_header = tok.encode("<|im_start|>assistant\n", add_special_tokens=False)
     im_end = tok.encode("<|im_end|>", add_special_tokens=False)[0]
+    # enable_thinking=false ends the generation prompt with an empty think
+    # block; the template renders one only before a final answer. Records
+    # marked thinking "off" get it before every tool call too, as vLLM would
+    # prompt them, and it is masked: at inference it is prompt, not output.
+    empty_think = "<think>\n\n</think>\n\n"
+    empty_think_ids = tok.encode(empty_think, add_special_tokens=False)
 
     def encode(record):
         """Tokenise multi-turn tool-calling chat record, masking non-assistant tokens.
@@ -147,6 +163,10 @@ def main():
         """
         messages = record["messages"]
         text = tok.apply_chat_template(messages, tools=TOOLS, tokenize=False)
+        off = record.get("thinking") == "off"
+        if off:
+            text = text.replace("<|im_start|>assistant\n<tool_call>",
+                                "<|im_start|>assistant\n" + empty_think + "<tool_call>")
         full = tok(text, truncation=True, max_length=args.max_len)
         input_ids = full["input_ids"]
         labels = [-100] * len(input_ids)
@@ -155,6 +175,8 @@ def main():
         while i < len(input_ids):
             if input_ids[i : i + len(assistant_header)] == assistant_header:
                 start = i + len(assistant_header)
+                if off and input_ids[start : start + len(empty_think_ids)] == empty_think_ids:
+                    start += len(empty_think_ids)
                 end = start
                 while end < len(input_ids) and input_ids[end] != im_end:
                     end += 1
@@ -168,6 +190,24 @@ def main():
 
         full["labels"] = labels
         return full
+
+    if args.show_encoding:
+        for mode in ("default", "off"):
+            for r in [r for r in records if r["thinking"] == mode][: args.show_encoding]:
+                enc = encode(r)
+                ids, labels = enc["input_ids"], enc["labels"]
+                out, i = [], 0
+                while i < len(ids):
+                    j = i
+                    while j < len(ids) and (labels[j] == -100) == (labels[i] == -100):
+                        j += 1
+                    piece = tok.decode(ids[i:j])
+                    out.append(piece if labels[i] == -100 else "[[TRAIN>>" + piece + "<<TRAIN]]")
+                    i = j
+                text = "".join(out)
+                print(f"===== {r['type']} thinking={mode}")
+                print(text[text.find("<|im_start|>user"):])
+        return
 
     ds = Dataset.from_list(records).map(encode, remove_columns=list(records[0].keys()))
 
@@ -249,7 +289,7 @@ def main():
         lr_scheduler_type="cosine",
         warmup_steps=warmup_steps,
         logging_steps=1,
-        save_strategy="no",
+        save_strategy=args.save_strategy,
         bf16=True,
         optim="paged_adamw_8bit",
         report_to=[],
@@ -266,11 +306,21 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     model.save_pretrained(args.out)
     tok.save_pretrained(args.out)
+    # safetensors writes its file 0600. The cache is NFS-shared so either node
+    # can serve an adapter, but the laptop's root squash cannot read a
+    # root-owned 0600 file: vLLM there fails with "No adapter found".
+    for root, dirs, files in os.walk(args.out):
+        for d in dirs:
+            os.chmod(os.path.join(root, d), 0o755)
+        for f in files:
+            os.chmod(os.path.join(root, f), 0o644)
 
     losses = [h["loss"] for h in trainer.state.log_history if "loss" in h]
     report = {
         "base_model": args.model,
         "records": len(records),
+        "dataset": args.dataset or "research_dataset.json",
+        "thinking_off_records": sum(r.get("thinking") == "off" for r in records),
         "dataset_categories": {
             t: sum(1 for r in records if r.get("type") == t)
             for t in set(r.get("type", "unknown") for r in records)

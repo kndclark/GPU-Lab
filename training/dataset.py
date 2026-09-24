@@ -18,8 +18,12 @@ DATASET_CACHE_PATH = os.path.join(
 )
 
 
-def build(seed: int = 42, **kwargs) -> List[Dict[str, Any]]:
-    """Return the audited research-first dataset."""
+def build(seed: int = 42, path: str = None, **kwargs) -> List[Dict[str, Any]]:
+    """Return the audited research-first dataset, or the one at path."""
+    if path:
+        records = json.load(open(path))
+        random.Random(seed).shuffle(records)
+        return records
     if os.path.exists(DATASET_CACHE_PATH):
         try:
             with open(DATASET_CACHE_PATH) as f:
