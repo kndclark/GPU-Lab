@@ -1,0 +1,1321 @@
+{
+ "label": "general-8b-base-nothink",
+ "set": "general",
+ "promql_catalog": false,
+ "model": "Qwen/Qwen3-8B",
+ "base": "http://10.10.0.1:8300",
+ "tools": true,
+ "thinking": "off",
+ "max_tokens": 512,
+ "max_calls": 3,
+ "temperature": 0.0,
+ "window": 4000,
+ "seed": 20260923,
+ "limit": 0,
+ "started": "2026-09-23T22:00:03-0600",
+ "elapsed_s": 4.0,
+ "tool_versions": {},
+ "provenance": {
+  "harness_sha256": "b976494770d9e292425776f57550b163f2af807032db7be65fe1f619625a25a6",
+  "server_version": "0.29.0",
+  "served": [
+   {
+    "id": "Qwen/Qwen3-8B",
+    "root": "Qwen/Qwen3-8B",
+    "parent": null,
+    "max_model_len": 8192
+   },
+   {
+    "id": "research",
+    "root": "/hf/adapters/qwen3-8b-research",
+    "parent": "Qwen/Qwen3-8B",
+    "max_model_len": null
+   }
+  ]
+ },
+ "summary": {
+  "general": {
+   "n": 45,
+   "any_call": 0.0,
+   "answered": 1.0,
+   "mean_calls": 0.0,
+   "status": {
+    "answered": 45
+   },
+   "calls_refused": 0,
+   "calls_web": 0,
+   "over_trigger": 0.0,
+   "correct_where_scorable": 1.0,
+   "over_trigger_by_category": {
+    "arithmetic": 0.0,
+    "instruction": 0.0,
+    "trivia": 0.0
+   }
+  }
+ },
+ "results": [
+  {
+   "id": "general-arithmetic-0",
+   "split": "general",
+   "category": "arithmetic",
+   "question": "What is 23 times 47?",
+   "expect": "\\b1,?081\\b",
+   "run": {
+    "status": "answered",
+    "final": "23 times 47 is 1081.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 294,
+      "completion_tokens": 14,
+      "finish_reason": "stop",
+      "text": "23 times 47 is 1081."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-arithmetic-1",
+   "split": "general",
+   "category": "arithmetic",
+   "question": "What is 1,000 minus 387?",
+   "expect": "\\b613\\b",
+   "run": {
+    "status": "answered",
+    "final": "1,000 minus 387 is 613.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 298,
+      "completion_tokens": 17,
+      "finish_reason": "stop",
+      "text": "1,000 minus 387 is 613."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-arithmetic-10",
+   "split": "general",
+   "category": "arithmetic",
+   "question": "What is 15 squared?",
+   "expect": "\\b225\\b",
+   "run": {
+    "status": "answered",
+    "final": "15 squared is $15 \\times 15 = 225$.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 291,
+      "completion_tokens": 19,
+      "finish_reason": "stop",
+      "text": "15 squared is $15 \\times 15 = 225$."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-arithmetic-11",
+   "split": "general",
+   "category": "arithmetic",
+   "question": "A recipe needs 250 g of flour per loaf. How much flour do 4 loaves need?",
+   "expect": "\\b1,?000\\s*g|\\b1\\s*kg",
+   "run": {
+    "status": "answered",
+    "final": "4 loaves of bread would require 1000 grams of flour, as each loaf needs 250 grams.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 307,
+      "completion_tokens": 27,
+      "finish_reason": "stop",
+      "text": "4 loaves of bread would require 1000 grams of flour, as each loaf needs 250 grams."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-arithmetic-12",
+   "split": "general",
+   "category": "arithmetic",
+   "question": "What is 2 to the power of 8?",
+   "expect": "\\b256\\b",
+   "run": {
+    "status": "answered",
+    "final": "2 to the power of 8 is 256.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 295,
+      "completion_tokens": 14,
+      "finish_reason": "stop",
+      "text": "2 to the power of 8 is 256."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-arithmetic-13",
+   "split": "general",
+   "category": "arithmetic",
+   "question": "What is half of 3.6?",
+   "expect": "\\b1\\.8\\b",
+   "run": {
+    "status": "answered",
+    "final": "Half of 3.6 is 1.8.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 293,
+      "completion_tokens": 13,
+      "finish_reason": "stop",
+      "text": "Half of 3.6 is 1.8."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-arithmetic-14",
+   "split": "general",
+   "category": "arithmetic",
+   "question": "Round 3.14159 to two decimal places.",
+   "expect": "\\b3\\.14\\b",
+   "run": {
+    "status": "answered",
+    "final": "3.14",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 298,
+      "completion_tokens": 5,
+      "finish_reason": "stop",
+      "text": "3.14"
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-arithmetic-2",
+   "split": "general",
+   "category": "arithmetic",
+   "question": "What is 3 cubed?",
+   "expect": "\\b27\\b",
+   "run": {
+    "status": "answered",
+    "final": "3 cubed is $3 \\times 3 \\times 3 = 27$.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 291,
+      "completion_tokens": 20,
+      "finish_reason": "stop",
+      "text": "3 cubed is $3 \\times 3 \\times 3 = 27$."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-arithmetic-3",
+   "split": "general",
+   "category": "arithmetic",
+   "question": "What is the square root of 169?",
+   "expect": "\\b13\\b",
+   "run": {
+    "status": "answered",
+    "final": "The square root of 169 is 13.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 295,
+      "completion_tokens": 14,
+      "finish_reason": "stop",
+      "text": "The square root of 169 is 13."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-arithmetic-4",
+   "split": "general",
+   "category": "arithmetic",
+   "question": "What is 7/8 as a decimal?",
+   "expect": "0?\\.875\\b",
+   "run": {
+    "status": "answered",
+    "final": "7 divided by 8 is equal to 0.875.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 294,
+      "completion_tokens": 16,
+      "finish_reason": "stop",
+      "text": "7 divided by 8 is equal to 0.875."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-arithmetic-5",
+   "split": "general",
+   "category": "arithmetic",
+   "question": "What is 12% of 250?",
+   "expect": "\\b30\\b",
+   "run": {
+    "status": "answered",
+    "final": "To calculate 12% of 250, you can use the formula:\n\n$$\n\\text{Percentage} = \\left( \\frac{\\text{Part}}{\\text{Whole}} \\right) \\times 100\n$$\n\nRearranging the formula to find the part:\n\n$$\n\\text{Part} = \\left( \\frac{\\text{Percentage}}{100} \\right) \\times \\text{Whole}\n$$\n\nSubstituting the values:\n\n$$\n\\text{Part} = \\left( \\frac{12}{100} \\right) \\times 250 = 0.12 \\times 250 = 30\n$$\n\nSo, 12% of 250 is **30**.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 296,
+      "completion_tokens": 172,
+      "finish_reason": "stop",
+      "text": "To calculate 12% of 250, you can use the formula:\n\n$$\n\\text{Percentage} = \\left( \\frac{\\text{Part}}{\\text{Whole}} \\right) \\times 100\n$$\n\nRearranging the formula to find the part:\n\n$$\n\\text{Part} = \\left( \\frac{\\text{Percentage}}{100} \\right) \\times \\text{Whole}\n$$\n\nSubstituting the values:\n\n$$\n\\text{Part} = \\left( \\frac{12}{100} \\right) \\times 250 = 0.12 \\times 250 = 30\n$$\n\nSo, 12% of 250 is **30**."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-arithmetic-6",
+   "split": "general",
+   "category": "arithmetic",
+   "question": "If I buy 3 books at $14 each, how much do I spend?",
+   "expect": "\\$?\\b42\\b",
+   "run": {
+    "status": "answered",
+    "final": "The total cost for buying 3 books at $14 each is calculated as follows:\n\n$$\n\\text{Total cost} = 3 \\times 14 = 42\n$$\n\nSo, you would spend $42.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 302,
+      "completion_tokens": 51,
+      "finish_reason": "stop",
+      "text": "The total cost for buying 3 books at $14 each is calculated as follows:\n\n$$\n\\text{Total cost} = 3 \\times 14 = 42\n$$\n\nSo, you would spend $42."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-arithmetic-7",
+   "split": "general",
+   "category": "arithmetic",
+   "question": "How many minutes are in 3.5 hours?",
+   "expect": "\\b210\\b",
+   "run": {
+    "status": "answered",
+    "final": "3.5 hours is equal to $3.5 \\times 60 = 210$ minutes.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 295,
+      "completion_tokens": 25,
+      "finish_reason": "stop",
+      "text": "3.5 hours is equal to $3.5 \\times 60 = 210$ minutes."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-arithmetic-8",
+   "split": "general",
+   "category": "arithmetic",
+   "question": "What is 999 plus 1?",
+   "expect": "\\b1,?000\\b",
+   "run": {
+    "status": "answered",
+    "final": "The sum of 999 and 1 is 1000.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 294,
+      "completion_tokens": 18,
+      "finish_reason": "stop",
+      "text": "The sum of 999 and 1 is 1000."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-arithmetic-9",
+   "split": "general",
+   "category": "arithmetic",
+   "question": "What is 81 divided by 9?",
+   "expect": "\\b9\\b",
+   "run": {
+    "status": "answered",
+    "final": "81 divided by 9 is 9.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 294,
+      "completion_tokens": 11,
+      "finish_reason": "stop",
+      "text": "81 divided by 9 is 9."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-instruction-30",
+   "split": "general",
+   "category": "instruction",
+   "question": "Reply with exactly three words describing the ocean.",
+   "expect": [
+    "words",
+    3
+   ],
+   "run": {
+    "status": "answered",
+    "final": "Vast, deep, endless.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 293,
+      "completion_tokens": 8,
+      "finish_reason": "stop",
+      "text": "Vast, deep, endless."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-instruction-31",
+   "split": "general",
+   "category": "instruction",
+   "question": "Write the word hello in all capital letters and nothing else.",
+   "expect": [
+    "exact",
+    "HELLO"
+   ],
+   "run": {
+    "status": "answered",
+    "final": "HELLO",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 296,
+      "completion_tokens": 3,
+      "finish_reason": "stop",
+      "text": "HELLO"
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-instruction-32",
+   "split": "general",
+   "category": "instruction",
+   "question": "List four fruits as a bulleted list, one per line.",
+   "expect": [
+    "bullets",
+    4
+   ],
+   "run": {
+    "status": "answered",
+    "final": "- Apple  \n- Banana  \n- Orange  \n- Grape",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 297,
+      "completion_tokens": 12,
+      "finish_reason": "stop",
+      "text": "- Apple  \n- Banana  \n- Orange  \n- Grape"
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-instruction-33",
+   "split": "general",
+   "category": "instruction",
+   "question": "Answer with only yes or no: is the sun a star?",
+   "expect": [
+    "exact_i",
+    "yes"
+   ],
+   "run": {
+    "status": "answered",
+    "final": "Yes.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 297,
+      "completion_tokens": 3,
+      "finish_reason": "stop",
+      "text": "Yes."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-instruction-34",
+   "split": "general",
+   "category": "instruction",
+   "question": "Give me a JSON object with a key named color set to blue. Output only the JSON.",
+   "expect": [
+    "json",
+    {
+     "color": "blue"
+    }
+   ],
+   "run": {
+    "status": "answered",
+    "final": "{\"color\": \"blue\"}",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 303,
+      "completion_tokens": 7,
+      "finish_reason": "stop",
+      "text": "{\"color\": \"blue\"}"
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-instruction-35",
+   "split": "general",
+   "category": "instruction",
+   "question": "Write one sentence that contains the word lighthouse.",
+   "expect": [
+    "contains_i",
+    "lighthouse"
+   ],
+   "run": {
+    "status": "answered",
+    "final": "The lighthouse stood tall on the cliff, guiding ships safely through the stormy night.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 294,
+      "completion_tokens": 19,
+      "finish_reason": "stop",
+      "text": "The lighthouse stood tall on the cliff, guiding ships safely through the stormy night."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-instruction-36",
+   "split": "general",
+   "category": "instruction",
+   "question": "Count from 1 to 5, separated by commas.",
+   "expect": [
+    "regex",
+    "1,\\s*2,\\s*3,\\s*4,\\s*5"
+   ],
+   "run": {
+    "status": "answered",
+    "final": "1, 2, 3, 4, 5",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 296,
+      "completion_tokens": 14,
+      "finish_reason": "stop",
+      "text": "1, 2, 3, 4, 5"
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-instruction-37",
+   "split": "general",
+   "category": "instruction",
+   "question": "Spell the word cat backwards.",
+   "expect": [
+    "regex",
+    "\\btac\\b"
+   ],
+   "run": {
+    "status": "answered",
+    "final": "The word \"cat\" spelled backwards is \"tac\".",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 290,
+      "completion_tokens": 13,
+      "finish_reason": "stop",
+      "text": "The word \"cat\" spelled backwards is \"tac\"."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-instruction-38",
+   "split": "general",
+   "category": "instruction",
+   "question": "Respond in all lowercase: what color is the sky on a clear day?",
+   "expect": [
+    "lower_with",
+    "blue"
+   ],
+   "run": {
+    "status": "answered",
+    "final": "the sky is usually blue on a clear day.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 299,
+      "completion_tokens": 11,
+      "finish_reason": "stop",
+      "text": "the sky is usually blue on a clear day."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-instruction-39",
+   "split": "general",
+   "category": "instruction",
+   "question": "Name three primary colors, separated by semicolons.",
+   "expect": [
+    "count",
+    ";",
+    2
+   ],
+   "run": {
+    "status": "answered",
+    "final": "Red;Yellow;Blue",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 295,
+      "completion_tokens": 6,
+      "finish_reason": "stop",
+      "text": "Red;Yellow;Blue"
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-instruction-40",
+   "split": "general",
+   "category": "instruction",
+   "question": "Translate 'thank you' into Spanish. Reply with only the translation.",
+   "expect": [
+    "exact_i",
+    "gracias"
+   ],
+   "run": {
+    "status": "answered",
+    "final": "Gracias.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 298,
+      "completion_tokens": 4,
+      "finish_reason": "stop",
+      "text": "Gracias."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-instruction-41",
+   "split": "general",
+   "category": "instruction",
+   "question": "What is the first letter of the English alphabet? Answer with a single character.",
+   "expect": [
+    "exact_i",
+    "a"
+   ],
+   "run": {
+    "status": "answered",
+    "final": "A",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 300,
+      "completion_tokens": 2,
+      "finish_reason": "stop",
+      "text": "A"
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-instruction-42",
+   "split": "general",
+   "category": "instruction",
+   "question": "Give a title for a story about a lost dog, in fewer than six words.",
+   "expect": [
+    "max_words",
+    5
+   ],
+   "run": {
+    "status": "answered",
+    "final": "**\"The Journey Home\"**",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 301,
+      "completion_tokens": 8,
+      "finish_reason": "stop",
+      "text": "**\"The Journey Home\"**"
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-instruction-43",
+   "split": "general",
+   "category": "instruction",
+   "question": "Repeat this exactly: The quick brown fox.",
+   "expect": [
+    "contains",
+    "The quick brown fox."
+   ],
+   "run": {
+    "status": "answered",
+    "final": "The quick brown fox.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 293,
+      "completion_tokens": 6,
+      "finish_reason": "stop",
+      "text": "The quick brown fox."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-instruction-44",
+   "split": "general",
+   "category": "instruction",
+   "question": "Describe a cat in exactly two sentences.",
+   "expect": [
+    "sentences",
+    2
+   ],
+   "run": {
+    "status": "answered",
+    "final": "A cat is a small, domesticated carnivorous mammal known for its agility, independence, and affectionate nature. They are often kept as pets and are admired for their playful behavior and graceful movements.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 292,
+      "completion_tokens": 42,
+      "finish_reason": "stop",
+      "text": "A cat is a small, domesticated carnivorous mammal known for its agility, independence, and affectionate nature. They are often kept as pets and are admired for their playful behavior and graceful movements."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-trivia-15",
+   "split": "general",
+   "category": "trivia",
+   "question": "What is the largest planet in our solar system?",
+   "expect": "jupiter",
+   "run": {
+    "status": "answered",
+    "final": "The largest planet in our solar system is Jupiter.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 294,
+      "completion_tokens": 11,
+      "finish_reason": "stop",
+      "text": "The largest planet in our solar system is Jupiter."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-trivia-16",
+   "split": "general",
+   "category": "trivia",
+   "question": "Who painted the Mona Lisa?",
+   "expect": "leonardo|da vinci",
+   "run": {
+    "status": "answered",
+    "final": "The Mona Lisa was painted by the Italian artist Leonardo da Vinci.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 290,
+      "completion_tokens": 14,
+      "finish_reason": "stop",
+      "text": "The Mona Lisa was painted by the Italian artist Leonardo da Vinci."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-trivia-17",
+   "split": "general",
+   "category": "trivia",
+   "question": "What is the boiling point of water at sea level, in Celsius?",
+   "expect": "\\b100\\b",
+   "run": {
+    "status": "answered",
+    "final": "The boiling point of water at sea level is 100 degrees Celsius.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 298,
+      "completion_tokens": 17,
+      "finish_reason": "stop",
+      "text": "The boiling point of water at sea level is 100 degrees Celsius."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-trivia-18",
+   "split": "general",
+   "category": "trivia",
+   "question": "How many legs does a spider have?",
+   "expect": "\\b(8|eight)\\b",
+   "run": {
+    "status": "answered",
+    "final": "A spider has 8 legs.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 292,
+      "completion_tokens": 8,
+      "finish_reason": "stop",
+      "text": "A spider has 8 legs."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-trivia-19",
+   "split": "general",
+   "category": "trivia",
+   "question": "What is the capital of Japan?",
+   "expect": "tokyo",
+   "run": {
+    "status": "answered",
+    "final": "The capital of Japan is Tokyo.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 291,
+      "completion_tokens": 8,
+      "finish_reason": "stop",
+      "text": "The capital of Japan is Tokyo."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-trivia-20",
+   "split": "general",
+   "category": "trivia",
+   "question": "What gas do plants take from the air for photosynthesis?",
+   "expect": "carbon dioxide|\\bco2\\b|co\u2082",
+   "run": {
+    "status": "answered",
+    "final": "Plants take carbon dioxide (CO\u2082) from the air for photosynthesis.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 296,
+      "completion_tokens": 17,
+      "finish_reason": "stop",
+      "text": "Plants take carbon dioxide (CO\u2082) from the air for photosynthesis."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-trivia-21",
+   "split": "general",
+   "category": "trivia",
+   "question": "In which year did World War II end?",
+   "expect": "\\b1945\\b",
+   "run": {
+    "status": "answered",
+    "final": "World War II ended in the year 1945.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 293,
+      "completion_tokens": 14,
+      "finish_reason": "stop",
+      "text": "World War II ended in the year 1945."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-trivia-22",
+   "split": "general",
+   "category": "trivia",
+   "question": "What is the hardest natural substance?",
+   "expect": "diamond",
+   "run": {
+    "status": "answered",
+    "final": "The hardest natural substance is diamond. It is composed of carbon atoms arranged in a crystal lattice structure, which gives it exceptional hardness. Diamond is widely known for its use in jewelry and as an industrial material due to its durability and thermal conductivity.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 291,
+      "completion_tokens": 49,
+      "finish_reason": "stop",
+      "text": "The hardest natural substance is diamond. It is composed of carbon atoms arranged in a crystal lattice structure, which gives it exceptional hardness. Diamond is widely known for its use in jewelry and as an industrial material due to its durability and thermal conductivity."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-trivia-23",
+   "split": "general",
+   "category": "trivia",
+   "question": "Who developed the theory of general relativity?",
+   "expect": "einstein",
+   "run": {
+    "status": "answered",
+    "final": "The theory of general relativity was developed by Albert Einstein.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 293,
+      "completion_tokens": 13,
+      "finish_reason": "stop",
+      "text": "The theory of general relativity was developed by Albert Einstein."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-trivia-24",
+   "split": "general",
+   "category": "trivia",
+   "question": "What is the smallest prime number?",
+   "expect": "\\b(2|two)\\b",
+   "run": {
+    "status": "answered",
+    "final": "The smallest prime number is 2.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 291,
+      "completion_tokens": 9,
+      "finish_reason": "stop",
+      "text": "The smallest prime number is 2."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-trivia-25",
+   "split": "general",
+   "category": "trivia",
+   "question": "What is the chemical formula for water?",
+   "expect": "h2o|h\u2082o",
+   "run": {
+    "status": "answered",
+    "final": "The chemical formula for water is H\u2082O.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 292,
+      "completion_tokens": 11,
+      "finish_reason": "stop",
+      "text": "The chemical formula for water is H\u2082O."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-trivia-26",
+   "split": "general",
+   "category": "trivia",
+   "question": "Which ocean is the largest?",
+   "expect": "pacific",
+   "run": {
+    "status": "answered",
+    "final": "The largest ocean in the world is the Pacific Ocean. It covers approximately 63 million square miles (165 million square kilometers) and contains more than half of the Earth's water.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 290,
+      "completion_tokens": 40,
+      "finish_reason": "stop",
+      "text": "The largest ocean in the world is the Pacific Ocean. It covers approximately 63 million square miles (165 million square kilometers) and contains more than half of the Earth's water."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-trivia-27",
+   "split": "general",
+   "category": "trivia",
+   "question": "How many days are in a leap year?",
+   "expect": "\\b366\\b",
+   "run": {
+    "status": "answered",
+    "final": "A leap year has 366 days.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 293,
+      "completion_tokens": 11,
+      "finish_reason": "stop",
+      "text": "A leap year has 366 days."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-trivia-28",
+   "split": "general",
+   "category": "trivia",
+   "question": "What language is mainly spoken in Brazil?",
+   "expect": "portuguese",
+   "run": {
+    "status": "answered",
+    "final": "The main language spoken in Brazil is Portuguese.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 292,
+      "completion_tokens": 10,
+      "finish_reason": "stop",
+      "text": "The main language spoken in Brazil is Portuguese."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  },
+  {
+   "id": "general-trivia-29",
+   "split": "general",
+   "category": "trivia",
+   "question": "What is the freezing point of water in Fahrenheit?",
+   "expect": "\\b32\\b",
+   "run": {
+    "status": "answered",
+    "final": "The freezing point of water in Fahrenheit is 32\u00b0F.",
+    "calls": [],
+    "turns": [
+     {
+      "prompt_tokens": 294,
+      "completion_tokens": 14,
+      "finish_reason": "stop",
+      "text": "The freezing point of water in Fahrenheit is 32\u00b0F."
+     }
+    ]
+   },
+   "score": {
+    "any_call": false,
+    "n_calls": 0,
+    "answered": true,
+    "over_trigger": false,
+    "correct": true
+   }
+  }
+ ]
+}
