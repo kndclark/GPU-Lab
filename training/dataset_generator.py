@@ -250,18 +250,31 @@ def get_observation_for_flag(lines: List[str], target_flag: Optional[str], max_l
     return "\n".join(header + ["... [flags omitted] ..."] + lines[start:end])
 
 
+# Module-level so bench/research_eval.py asks its held-out questions in exactly
+# the phrasings the adapter trained on. Order matters: random.sample draws from
+# these lists, so reordering them changes the generated dataset.
+CLI_PROMPT_TEMPLATES = [
+    "What is the option in {tool} to {desc}?",
+    "How do I {desc} using {tool}?",
+    "In {tool}, what flag controls {desc}?",
+    "What does the {flag} flag do in {tool}?",
+    "Can you tell me the syntax for {flag} in {tool}?",
+    "I need to {desc}. Which command-line option in {tool} should I use?",
+]
+
+TRAP_PROMPT_TEMPLATES = [
+    "Does {tool} support the {fake_flag} option for {fake_desc}?",
+    "How do I use the {fake_flag} flag in {tool}?",
+    "What does {fake_flag} do in {tool}?",
+    "Can I pass {fake_flag} to {tool} when running it?",
+]
+
+
 def generate_cli_samples(cli_specs=None) -> List[Dict[str, Any]]:
     """Harvest real help from the system and build verified trajectories."""
     samples = []
 
-    prompt_templates = [
-        "What is the option in {tool} to {desc}?",
-        "How do I {desc} using {tool}?",
-        "In {tool}, what flag controls {desc}?",
-        "What does the {flag} flag do in {tool}?",
-        "Can you tell me the syntax for {flag} in {tool}?",
-        "I need to {desc}. Which command-line option in {tool} should I use?",
-    ]
+    prompt_templates = CLI_PROMPT_TEMPLATES
 
     for tool_name, help_cmd, tool_desc in (cli_specs if cli_specs is not None else CLI_SPECS):
         raw_help = run_cmd(help_cmd)
@@ -333,12 +346,7 @@ def generate_trap_samples(trap_specs=None) -> List[Dict[str, Any]]:
     """Build anti-hallucination trajectories where the model checks help and rejects fake flags."""
     samples = []
 
-    trap_prompts = [
-        "Does {tool} support the {fake_flag} option for {fake_desc}?",
-        "How do I use the {fake_flag} flag in {tool}?",
-        "What does {fake_flag} do in {tool}?",
-        "Can I pass {fake_flag} to {tool} when running it?",
-    ]
+    trap_prompts = TRAP_PROMPT_TEMPLATES
 
     for tool_name, fake_flag, help_cmd, fake_desc in (trap_specs if trap_specs is not None else TRAP_SPECS):
         raw_help = run_cmd(help_cmd)
