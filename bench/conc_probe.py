@@ -2,7 +2,6 @@
 """N concurrent long-context requests. Unique prompts, so no prefix-cache help."""
 import argparse, json, random, statistics, threading, time, urllib.request
 
-MODEL = "hugging-quants/Meta-Llama-3.1-70B-Instruct-GPTQ-INT4"
 
 
 def one(base, model, nums, max_tokens, out, i):
@@ -38,11 +37,14 @@ def one(base, model, nums, max_tokens, out, i):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://lab-desktop:8200")
-    ap.add_argument("--model", default=MODEL)
+    ap.add_argument("--model", default="", help="default: the first model the server lists")
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--numbers", type=int, default=950)
     ap.add_argument("--max-tokens", type=int, default=128)
     a = ap.parse_args()
+    if not a.model:  # the pool lists its real name first, then "pool"
+        with urllib.request.urlopen(a.base.rstrip("/") + "/v1/models", timeout=30) as r:
+            a.model = json.load(r)["data"][0]["id"]
     # A FIXED seed makes every run send identical prompts, which the prefix
     # cache then serves: TTFT collapses and the run measures nothing. Seed
     # from the clock so each run is cold.
@@ -58,7 +60,7 @@ def main():
     ttft = sorted(r["ttft_s"] for r in out)
     dec = sorted(r["decode_tok_s"] for r in out)
     comp = sum(r["completion_tokens"] for r in out)
-    print(f"  c={a.concurrency}  prompt_tokens={out[0]['prompt_tokens']}  wall={wall:.1f}s")
+    print(f"  model={a.model}  c={a.concurrency}  prompt_tokens={out[0]['prompt_tokens']}  wall={wall:.1f}s")
     print(f"  ttft p50={statistics.median(ttft):.3f}s  min={ttft[0]:.3f}  max={ttft[-1]:.3f}")
     print(f"  per-request decode p50={statistics.median(dec):.3f} tok/s")
     print(f"  aggregate end-to-end={comp/wall:.1f} tok/s  ({comp} completion tokens)")
