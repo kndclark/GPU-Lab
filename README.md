@@ -102,15 +102,12 @@ servers; `lab pool down` gives them back.
 | Power cap | 400 W | 175 W |
 | Host RAM | 31.9 GB | 63.4 GB |
 | Role | always-on serving + training | source builds + the sm_120 experiment |
-| Kernel | 7.0.0-31-generic | 7.0.0-34-generic |
-| docker-ce | 29.8.0 | 29.8.1 |
-| nvidia-container-toolkit | 1.20.0-1 | 1.20.1-1 |
 
-Both: Ubuntu 26.04.1, driver 595.91.07, CUDA 13.2. The kernel, Docker and
-container-toolkit patch versions matched at Phase 0 and have since drifted
-apart (checked 2026-09-27). Under the "identical except the architecture"
-rule, that drift has to be closed, or ruled out as a cause, before a
-difference between the nodes is put down to the architecture.
+Both: Ubuntu 26.04.1, kernel 7.0.0-34-generic, driver 595.91.07, CUDA 13.2,
+docker-ce 29.8.1, nvidia-container-toolkit 1.20.1-1. The kernel, Docker and
+toolkit versions drifted apart after Phase 0 and were matched again on
+2026-09-27. The rule is "identical except the architecture", so recheck them
+before putting a difference between the nodes down to the architecture.
 
 Connected by a direct 2.5GbE cable on a private /30 (`lab-desktop` / `lab-laptop`),
 0.55 ms RTT. See [host/](host/).
