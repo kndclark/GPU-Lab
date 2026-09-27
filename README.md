@@ -243,17 +243,24 @@ except `POOL_MAX_BATCHED_TOKENS`, which defaults to 512 rather than vLLM's resol
       POOL_MAXLEN=4096 POOL_WAIT_SECS=900 POOL_EXTRA_FLAGS=--enforce-eager \
       bin/lab pool up
 
-`POOL_WAIT_SECS` matters because the two stages do not load symmetrically. The
-desktop reads the checkpoint from local EXT4 and finishes in ~12 s; the laptop
-took ~124 s to pull its identical 18.44 GiB half over NFS. It now reads the
-local mirror instead, and `lab pool up` refuses if the mirror is behind the
-desktop for `POOL_MODEL`.
+`POOL_WAIT_SECS` matters because load time grows with the model. The stages
+used to load asymmetrically too: for the 70B the desktop read its half from
+local EXT4 in ~12 s, while the laptop took ~124 s to pull its identical
+18.44 GiB half over NFS. The laptop now reads its local mirror instead, and
+`lab pool up` refuses if the mirror is behind the desktop for `POOL_MODEL`.
+Measured with Qwen3-14B on 2026-09-27, from a cold page cache: the laptop's
+13.76 GiB half loaded in 2.55 s, the desktop's in 9.69 s, and `pool up` took
+168 s end to end against ~230 s over NFS. The 70B has not been re-timed from
+the mirror.
 
 At `POOL_GPU_UTIL=0.92` the laptop preflight passes with about 93 MiB of margin,
 and the laptop drives a display — close the browser *before* `lab pool up`. Once
 the pool is up its arena is already allocated and a browser can safely use the
 ~500 MiB that remains. `POOL_GPU_UTIL=0.88` buys back ~0.95 GiB, at a cost of
-roughly 16,320 → 10,200 tokens of KV budget.
+roughly 16,320 → 10,200 tokens of KV budget for the 70B. Qwen3-14B holds far
+more: each card keeps 20 of its 40 layers (the 70B: 40 of 80) with the same
+8 KV heads, so a token costs half as much, and its smaller weights leave more
+room. 60,864 tokens at 0.92, measured 2026-09-27.
 
 Recorded baselines are in [bench/](bench/), each marking which figures were
 measured first-hand and which were carried forward. Two known gaps: the
