@@ -4,7 +4,8 @@
 In this repo a push IS a deploy: origin has a second push URL whose post-receive
 hook runs `checkout -f main` on the desktop. So CI that runs after the push is
 too late -- by the time it goes red the serving node has already taken the
-change. This runs as a pre-push hook instead.
+change. This runs as a pre-push hook instead. The GitHub workflow runs it again
+on a clean machine, as a record rather than a gate.
 
 Exit 0 = safe to push. Exit 1 = something would break on the other side.
 """

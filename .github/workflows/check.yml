@@ -1,0 +1,24 @@
+# The same gate the pre-push hook runs, on a clean machine. It cannot stop a
+# deploy -- a push reaches the desktop before this starts (see bin/check.py) --
+# but it catches a push made from a node that could not build the Rust crate,
+# where check.py only warns.
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install PyYAML
+        run: sudo apt-get update -q && sudo apt-get install -y -q python3-yaml
+      # Build and test the crate here, not inside check.py: check.py turns a
+      # missing cargo or a slow cold build into a warning, which would pass.
+      - name: cargo test (kernels/sm-differ)
+        run: cargo test --manifest-path kernels/sm-differ/Cargo.toml
+      - name: bin/check.py
+        run: python3 bin/check.py
