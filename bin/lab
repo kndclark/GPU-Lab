@@ -96,10 +96,10 @@ POOL_MAX_BATCHED_TOKENS=${POOL_MAX_BATCHED_TOKENS:-512}
 # "Defaulting max_num_batched_tokens to N" at debug level, so it is missing
 # from an ordinary run's log no matter how hard you grep.
 POOL_LOG_LEVEL=${POOL_LOG_LEVEL:-}
-# How long to wait for the endpoint. 300s suits Qwen3-14B (~230s is normal).
-# A 70B-class model is ~2.6x the weights and the laptop stage pulls its half
-# over NFS, so it needs more; raise this rather than reading the exit 1 as a
-# failure, since the engine keeps loading in the background either way.
+# How long to wait for the endpoint. 300s suits Qwen3-14B (168 s on 2026-09-27
+# with the laptop reading its mirror; ~230 s over NFS). A 70B-class model is
+# ~2.6x the weights, so it needs more; raise this rather than reading the exit 1
+# as a failure, since the engine keeps loading in the background either way.
 POOL_WAIT_SECS=${POOL_WAIT_SECS:-300}
 # One-off serve flags, e.g. --enforce-eager when CUDA graph capture will not
 # fit in what is left after the weights.
@@ -699,8 +699,8 @@ pool_up() {
 
     say "$((n++))/$total  waiting for the endpoint"
     local url="http://$DESKTOP_ADDR:$POOL_PORT/v1/models" served=0
-    # ~230 s is normal: weights load from the NFS cache over the direct link and
-    # the engine compiles on first start. The budget is deliberately well past it.
+    # ~170 s is normal: the laptop's half loads from its mirror in seconds, and
+    # the rest is Ray and engine start-up. The budget is deliberately well past it.
     for _ in $(seq 1 $(( POOL_WAIT_SECS / 2 ))); do
         curl -sf -m3 "$url" >/dev/null 2>&1 && { served=1; break; }
         sleep 2
