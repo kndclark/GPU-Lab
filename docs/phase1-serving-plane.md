@@ -12,7 +12,7 @@ answers for every model on either machine.
 | vLLM coder | `127.0.0.1:8101` | pinned so Prometheus has a stable target |
 | vLLM embed | `127.0.0.1:8102` | pinned, same reason |
 | Prometheus | `http://lab-desktop:9090` | 90d retention |
-| Grafana | `http://lab-desktop:3000` | admin/admin, dashboard "GPU Lab" |
+| Grafana | `http://lab-desktop:3000` | dashboard "GPU Lab"; admin/admin only seeds a fresh install |
 
 Master key: `/etc/gpu-lab/litellm.env` on the desktop, mode 0600, not in git.
 
