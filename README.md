@@ -36,31 +36,41 @@ models neither card fits alone.
 
 ```mermaid
 flowchart LR
-    client(["any OpenAI-compatible client"])
-    subgraph desktop["Desktop: RTX 3090, sm_86, 10.10.0.1"]
-        litellm["LiteLLM :4000<br/>the front door"]
+    client(["OpenAI-compatible<br/>client"])
+    subgraph desktop["Desktop: RTX 3090, sm_86"]
+        litellm["LiteLLM :4000<br/>front door"]
         swapD["llama-swap :8080"]
         vllmD["vLLM"]
+        poolD["pool stage<br/>vLLM :8200"]
         prom["Prometheus :9090<br/>Grafana :3000"]
         cache[("model cache<br/>/srv/model-cache")]
     end
-    subgraph laptop["Laptop: RTX 5090 Laptop, sm_120, 10.10.0.2"]
+    subgraph laptop["Laptop: RTX 5090 Laptop, sm_120"]
         swapL["llama-swap :8080"]
         vllmL["vLLM"]
+        poolL["pool stage<br/>Ray worker"]
         cacheL[("model cache<br/>NFS mount")]
     end
-    client --> litellm
+    client -->|per-node mode| litellm
     litellm --> swapD --> vllmD
-    litellm -->|direct 2.5GbE| swapL --> vllmL
+    litellm -->|2.5GbE| swapL --> vllmL
+    client ==>|pool mode| poolD
+    poolD <==>|"activations<br/>over 2.5GbE"| poolL
     prom -.->|scrape| swapD
     prom -.->|scrape| swapL
     cache -.->|NFS| cacheL
 ```
 
-A client names a model and LiteLLM routes it to whichever node's llama-swap
-holds it; llama-swap starts and stops vLLM on demand. `lab pool up` replaces
-that arrangement with one vLLM instance split across both cards (pipeline
-parallel over Ray), served on `:8200`.
+
+The lab runs in one of two modes, never both, because each uses both GPUs.
+In **per-node mode** a client names a model and LiteLLM routes it to whichever
+node's llama-swap holds it; llama-swap starts and stops vLLM on demand. In
+**pool mode** (`lab pool up`) one vLLM instance is split across both cards,
+pipeline parallel over Ray, and served on `:8200`; each stage holds half the
+layers and hands its activations to the other over the direct link.
+Prometheus scrapes both llama-swaps, the per-node vLLMs while they are up, and
+a GPU exporter on each node (the scrape arrows are simplified). The pool is not
+yet behind the front door or scraped.
 
 ## Two jobs
 
