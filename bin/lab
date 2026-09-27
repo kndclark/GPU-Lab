@@ -431,9 +431,11 @@ cmd_down() {
 import sys,yaml
 try:
     cfg=yaml.safe_load(open('$REPO/serving/litellm-config.yaml'))
+    # Not the pool: 'lab up' never brings it back; 'lab pool up' does.
     here=[m['model_name'] for m in cfg.get('model_list',[])
-          if '127.0.0.1' in str(m.get('litellm_params',{}).get('api_base','')) 
-          or '10.10.0.1' in str(m.get('litellm_params',{}).get('api_base',''))]
+          if ':$POOL_PORT' not in str(m.get('litellm_params',{}).get('api_base',''))
+          and ('127.0.0.1' in str(m.get('litellm_params',{}).get('api_base',''))
+          or '10.10.0.1' in str(m.get('litellm_params',{}).get('api_base','')))]
     print(', '.join(here) or '(none)')
 except Exception: print('(could not read litellm config)')
 " 2>/dev/null)"
@@ -644,11 +646,18 @@ pool_up() {
     # 60 seconds" once a minute forever -- which points at shared memory and at
     # cross-host transport, both of which are fine. Any mixed-capability pair
     # straddling sm_90 hits this class of bug.
+    #
+    # Bound to the direct link, not 0.0.0.0: this endpoint has no auth, and on
+    # all interfaces it was open on the desktop's Wi-Fi address too. The front
+    # door reaches it as "pool" (serving/litellm-config.yaml), a name that
+    # holds whichever POOL_MODEL is up. The HF id stays first because vLLM
+    # reports the first name, and bench scripts take the first listed model.
     on_desktop "sudo docker exec -d ray-head bash -c '
         ${POOL_LOG_LEVEL:+VLLM_LOGGING_LEVEL=$POOL_LOG_LEVEL} vllm serve $POOL_MODEL \
+          --served-model-name $POOL_MODEL pool \
           --pipeline-parallel-size 2 --distributed-executor-backend ray \
           --no-enable-flashinfer-autotune \
-          --host 0.0.0.0 --port $POOL_PORT --max-model-len $POOL_MAXLEN \
+          --host $DESKTOP_ADDR --port $POOL_PORT --max-model-len $POOL_MAXLEN \
           --gpu-memory-utilization $POOL_GPU_UTIL $POOL_BATCH_FLAG $POOL_EXTRA_FLAGS \
           > /tmp/vllm-pool.log 2>&1'"
     ok "launched; log: ssh llm \"sudo docker exec ray-head tail -f /tmp/vllm-pool.log\""
@@ -669,7 +678,7 @@ pool_up() {
     ok "models : $(curl -s "$url" | python3 -c 'import json,sys;print(*[m["id"] for m in json.load(sys.stdin)["data"]])' 2>/dev/null || echo '(unparseable)')"
     ok "split  : desktop $(desktop_gpu_used_mib) MiB + laptop $(gpu_used_mib) MiB"
     say "pool up. endpoint: http://$DESKTOP_ADDR:$POOL_PORT/v1"
-    ok "not on the LiteLLM front door -- this endpoint is direct."
+    ok "front door: model \"pool\" at http://$DESKTOP_ADDR:4000/v1 (LiteLLM key required)"
     ok "llama-swap is stopped on both nodes; 'lab pool down' then 'lab up' restores it."
 }
 

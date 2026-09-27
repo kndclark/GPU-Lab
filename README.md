@@ -51,10 +51,10 @@ flowchart LR
         poolL["pool stage<br/>Ray worker"]
         cacheL[("local mirror<br/>read-only")]
     end
-    client -->|per-node mode| litellm
-    litellm --> swapD --> vllmD
+    client --> litellm
+    litellm -->|per-node mode| swapD --> vllmD
     litellm -->|2.5GbE| swapL --> vllmL
-    client ==>|pool mode| poolD
+    litellm ==>|pool mode| poolD
     poolD <==>|"activations<br/>over 2.5GbE"| poolL
     prom -.->|scrape| swapD
     prom -.->|scrape| swapL
@@ -66,11 +66,11 @@ The lab runs in one of two modes, never both, because each uses both GPUs.
 In **per-node mode** a client names a model and LiteLLM routes it to whichever
 node's llama-swap holds it; llama-swap starts and stops vLLM on demand. In
 **pool mode** (`lab pool up`) one vLLM instance is split across both cards,
-pipeline parallel over Ray, and served on `:8200`; each stage holds half the
-layers and hands its activations to the other over the direct link.
-Prometheus scrapes both llama-swaps, the per-node vLLMs while they are up, and
-a GPU exporter on each node (the scrape arrows are simplified). The pool is not
-yet behind the front door or scraped.
+pipeline parallel over Ray, and published on the front door as the model
+`pool`; each stage holds half the layers and hands its activations to the other
+over the direct link. Prometheus scrapes both llama-swaps, the vLLMs and the pool
+while they are up, and a GPU exporter on each node (the scrape arrows are
+simplified).
 
 ## Two jobs
 
@@ -192,9 +192,15 @@ without taking the endpoint down for everything else. LiteLLM itself needs no GP
 ## Pooling both cards
 
 `lab pool up` runs **one** model across both GPUs using vLLM pipeline parallelism
-over Ray, with the stage boundary crossing the direct link:
+over Ray, with the stage boundary crossing the direct link. Through the front
+door it is the model `pool`, which names whichever `POOL_MODEL` is up:
 
-    http://10.10.0.1:8200/v1
+    http://10.10.0.1:4000/v1      model "pool" (LiteLLM key required)
+    http://10.10.0.1:8200/v1      direct, no auth; what bench/ scripts use
+
+The direct port binds the link address, not every interface, so the desktop's
+Wi-Fi address does not answer on it. That is not a firewall: a LAN machine that
+added a route to 10.10.0.1 through the desktop would still get through.
 
 The script always passes `--no-enable-flashinfer-autotune`. The autotune hook is
 gated per device on compute capability, and it deadlocks when the two ranks
@@ -250,8 +256,9 @@ the pool is up its arena is already allocated and a browser can safely use the
 roughly 16,320 → 10,200 tokens of KV budget.
 
 Recorded baselines are in [bench/](bench/), each marking which figures were
-measured first-hand and which were carried forward. Two known gaps: the pool is
-not published on the front door (`:8200` binds `0.0.0.0` with no auth), and pooled
+measured first-hand and which were carried forward. Two known gaps: the
+desktop's llama-swap (`:8080`) listens on every interface with no auth, so
+per-node models can be reached around the front door from its LAN; and pooled
 serving does not survive a reboot, because it has no systemd unit.
 
 ## Build

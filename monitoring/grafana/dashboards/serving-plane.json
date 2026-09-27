@@ -655,7 +655,7 @@
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
       },
-      "description": "llama-swap keeps only one model resident, so the other target reads 0. That is expected, not an outage.",
+      "description": "llama-swap keeps only one model resident, so the other target reads 0. That is expected, not an outage. The pool reads 1 only while lab pool up holds both cards, and the per-node targets then read 0.",
       "gridPos": {
         "x": 12,
         "y": 18,
@@ -668,7 +668,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "up{job=\"vllm\"}",
+          "expr": "up{job=~\"vllm|vllm-pool\"}",
           "legendFormat": "{{model}}",
           "refId": "A",
           "editorMode": "code",

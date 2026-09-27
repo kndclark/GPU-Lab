@@ -43,6 +43,20 @@ model_list:
       node: laptop
       arch: sm_120
 
+  # ---- pooled: one vLLM across both cards (lab pool up), served by ray-head ----
+  # Answers only while the pool is up; the rest of the time this route errors,
+  # which is honest -- the per-node models and the pool cannot be co-resident.
+  # No fallback on purpose: nothing else can serve a model this large.
+  # "pool" is whichever POOL_MODEL is up; bin/lab passes it as a served name.
+  - model_name: pool
+    litellm_params:
+      model: openai/pool
+      api_base: http://10.10.0.1:8200/v1
+      api_key: none                     # vLLM does not authenticate; LiteLLM does
+    model_info:
+      node: pooled
+      arch: sm_86+sm_120
+
 litellm_settings:
   drop_params: true          # tolerate client params vLLM does not implement
   request_timeout: 600       # a cold model load through llama-swap takes ~2 min
