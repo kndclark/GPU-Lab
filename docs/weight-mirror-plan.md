@@ -1,8 +1,8 @@
 # Weight mirror on the laptop — plan
 
 **Status: in use since 2026-09-27.** The laptop's `/srv/model-cache` is the
-mirror. Steps 1-7 are proven, and the wiring in 8; still open is the prune
-test (8). See
+mirror. All eight steps are proven; only a laptop reboot is untested (row 5).
+See
 "Build log" at the end.
 
 Tags: MEASURED = run for this plan on 2026-09-26; SOURCED = file:line;
@@ -223,7 +223,7 @@ in `/etc/exports:11` [MEASURED].
 | 5 | 2026-09-27. `/etc/fstab` lines 14-15 are lines 3 and 7 of host/laptop-fstab-model-cache.line; backup `/etc/fstab.pre-mirror-2026-09-27`. `findmnt`: `/srv/model-cache` = `/dev/nvme1n1p3[/srv/model-mirror]` ext4 `ro`; `/srv/model-cache-nfs` automounts `10.10.0.1:/srv/model-cache` nfs4 on first access. The `touch` in vllm/vllm-openai:v0.29.0 fails "Read-only file system". Reboot: not tested | MEASURED |
 | 6 | 2026-09-27. Wired: `HF_HUB_OFFLINE=1`, the `up` preflight, the `pool_up` check, training/run.sh. `up` preflight, run on a copy of bin/lab with the peer set to an unreachable address and an exit after the preflight: mirror mounted, it warns with the last sync and carries on (exit 0); with the mirror check forced false, the old refusal (exit 1). `pool_up` check, on a copy with `MIRROR` pointed at an empty directory: repo absent refuses; repo present but empty refuses "32 file(s) behind"; both before llama-swap is touched. Cable-unplugged proof, cable physically out (`enp129s0` NO-CARRIER, desktop unpingable): `lab up --warm` warned with the last sync and carried on, and loaded qwen3-embed in 89 s wall; `/v1/embeddings` returned a 1024-dim vector; `lab status` printed "freshness unknown (link down)". Its repair hint (`gpu-lab-igc-resume-repair`) is for a wedged NIC, not a pulled cable | MEASURED |
 | 7 | 2026-09-27, cable in, laptop page cache dropped first, `POOL_GPU_UTIL=0.92`. `lab pool up` Qwen3-14B: exit 0, 168 s launch to endpoint (NFS: ~230 s). vLLM: the laptop's 13.76 GiB half "Loading weights took 2.55 seconds" from EXT4, the desktop's 9.69 s; KV cache 60,864 tokens. moe-qlora `gpurun.sh` G4 route-1 load of Lightning BF16 from the mirror: 17.3 s (224.8 s over NFS on 2026-09-24), same torch peak 17.564 GiB, same NLL 2.0816 and cloze answers, log ends `exit 0` (results/g4-route1-mirror-laptop.json) | MEASURED |
-| 8 | 2026-09-27, partial. `lab status` ends with the mirror section (ro, last sync, 10 groups current). With the lock held, `status` names the pid; released, no line. `down` names a running sync the same way (shared helper; read with the lock held: "a mirror sync is still running (pid N)"; released, no line). check.py: 16 ok; with the record altered, it warns (exit 0), and restored it passes. Prune test: not run | MEASURED |
+| 8 | 2026-09-27. `lab status` ends with the mirror section (ro, last sync, 10 groups current). With the lock held, `status` names the pid; released, no line. `down` names a running sync the same way (shared helper; read with the lock held: "a mirror sync is still running (pid N)"; released, no line). check.py: 16 ok; with the record altered, it warns (exit 0), and restored it passes. Prune test, with the baseline "nothing stale": two files planted under hub/models--Qwen--Qwen3-8B, one also appended to the manifest. Report: 2 files, "1 of these were written by a sync". `--apply`: "deleted 1", the manifest one is gone, the other kept and listed; manifest back to 538 lines. Plant removed; `prune` "nothing stale"; manifest byte-identical to its backup | MEASURED |
 
 Bug found and fixed while building: under `set -euo pipefail`, `du` on a
 not-yet-created path made the first sync exit 1 silently after its header.
