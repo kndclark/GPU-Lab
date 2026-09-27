@@ -48,6 +48,9 @@ if [ "$cap" != "86" ]; then
         rsync -az --exclude='__pycache__' --exclude='runs' "$here/" llm:~/gpu-lab/training/
         exec ssh llm "cd ~/gpu-lab/training && ./run.sh $*"
     fi
+    # FORCE=1 on the laptop: its /srv/model-cache is the read-only local mirror
+    # (docs/weight-mirror-plan.md), so the adapter goes to the desktop's copy.
+    ADAPTERS=/srv/model-cache-nfs/adapters
 fi
 
 sudo docker image inspect "$IMAGE" >/dev/null 2>&1 || {

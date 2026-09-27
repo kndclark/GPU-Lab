@@ -1,3 +1,7 @@
 # Append to /etc/fstab on the laptop, then: sudo systemctl daemon-reload && sudo mount -a
 # nofail + x-systemd.automount: an unplugged cable must not block boot.
-lab-desktop:/srv/model-cache  /srv/model-cache  nfs4  rw,hard,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600  0  0
+lab-desktop:/srv/model-cache  /srv/model-cache-nfs  nfs4  rw,hard,noatime,_netdev,nofail,x-systemd.automount,x-systemd.idle-timeout=600  0  0
+# Consumers read the local, hash-checked mirror at the old path, read-only, so the
+# laptop loads the same bytes with the cable in or out. Only `lab mirror sync`
+# writes it (docs/weight-mirror-plan.md). sudo install -d /srv/model-cache-nfs first.
+/srv/model-mirror  /srv/model-cache  none  bind,ro,nofail  0  0

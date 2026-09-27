@@ -98,6 +98,17 @@ re-downloadable.
 On the laptop, `nofail,x-systemd.automount` means an unplugged cable degrades to a
 missing directory rather than a failed boot.
 
+**The laptop does not read this export directly any more.** Since 2026-09-27 the
+NFS mount sits at `/srv/model-cache-nfs`, and `/srv/model-cache` is a read-only
+bind of `/srv/model-mirror`: a local copy that `lab mirror sync` pulls over ssh
+and checks blob by blob against the hash each blob is named after. Every
+consumer keeps its path, the cable can be out, and "byte-identical" still holds
+because the copy is verified rather than trusted. Only the desktop is ever
+written; a new download there is invisible on the laptop until the next sync
+(`lab mirror status` says what is behind). Both fstab lines are in
+`laptop-fstab-model-cache.line`; the why, and the rollback, are in
+`docs/weight-mirror-plan.md`.
+
 ## Driver notes
 
 Both nodes are on **595.91.07**, reached by convergence rather than pinning. That
