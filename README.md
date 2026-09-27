@@ -1,8 +1,68 @@
 # GPU-Lab
 
-A two-node heterogeneous CUDA lab: **sm_86** (RTX 3090) and **sm_120** (RTX 5090 Laptop).
+Two consumer GPUs of different architectures, an **RTX 3090 (sm_86)** in a
+desktop and an **RTX 5090 Laptop (sm_120)**, run as one lab over a direct
+2.5GbE cable. It measures how the same CUDA code behaves on the two
+architectures, and it pools both cards into one 48 GB device that serves
+models neither card fits alone.
 
-It does two jobs.
+## Highlights
+
+- **A 70B model on two consumer cards.** Pipeline parallelism across the cable
+  serves Llama-3.1-70B (4-bit GPTQ) at ~19 tok/s single-stream with 4k context.
+  The same pool serves Qwen3-14B at ~2030 tok/s aggregate across 128 concurrent
+  requests. See [Pooling both cards](#pooling-both-cards).
+- **A cross-architecture kernel differential.** vLLM's own kernel tests run on
+  both cards from one bit-identical image. The two cards do not even collect
+  the same tests: 72 NVFP4 tests exist only on sm_120, admitted by a numeric
+  capability threshold rather than a family check. Candidate upstream reports
+  (C1 to C8) are triaged with their evidence in
+  [docs/contributions.md](docs/contributions.md); none has been filed yet.
+- **A guard against a silent failure.** An image built for the wrong
+  architecture does not crash; the driver JIT-compiles embedded PTX and
+  returns plausible numbers at the wrong speed. The build states its gencode
+  explicitly, and `arch_probe` fails loudly on a mismatch. See
+  [below](#the-one-thing-to-understand-before-changing-the-build).
+- **One OpenAI-compatible endpoint** in front of both nodes (LiteLLM, then
+  llama-swap, then vLLM), with Prometheus and Grafana watching both GPUs.
+- **A negative result, kept.** QLoRA on an 8B model learned the *style* of the
+  lab's facts but not the facts. The pipeline and its evals are in
+  [training/](training/) and [bench/](bench/).
+- **sm-differ**, a Rust CLI that compares one metric across the two
+  architectures and refuses to give a verdict it cannot support: a missing
+  reading is never turned into a number. See [kernels/sm-differ/](kernels/sm-differ/).
+
+## Architecture
+
+```mermaid
+flowchart LR
+    client(["any OpenAI-compatible client"])
+    subgraph desktop["Desktop: RTX 3090, sm_86, 10.10.0.1"]
+        litellm["LiteLLM :4000<br/>the front door"]
+        swapD["llama-swap :8080"]
+        vllmD["vLLM"]
+        prom["Prometheus :9090<br/>Grafana :3000"]
+        cache[("model cache<br/>/srv/model-cache")]
+    end
+    subgraph laptop["Laptop: RTX 5090 Laptop, sm_120, 10.10.0.2"]
+        swapL["llama-swap :8080"]
+        vllmL["vLLM"]
+        cacheL[("model cache<br/>NFS mount")]
+    end
+    client --> litellm
+    litellm --> swapD --> vllmD
+    litellm -->|direct 2.5GbE| swapL --> vllmL
+    prom -.->|scrape| swapD
+    prom -.->|scrape| swapL
+    cache -.->|NFS| cacheL
+```
+
+A client names a model and LiteLLM routes it to whichever node's llama-swap
+holds it; llama-swap starts and stops vLLM on demand. `lab pool up` replaces
+that arrangement with one vLLM instance split across both cards (pipeline
+parallel over Ray), served on `:8200`.
+
+## Two jobs
 
 **It is a measurement instrument.** Two GPU architectures, one generation and one
 power class apart, are held identical in *every respect except the architecture* —
@@ -23,9 +83,6 @@ wants the cards isolated and identical, pooling wants them fused and busy. They 
 not run at the same time. `lab pool up` claims both cards and stops the per-node
 servers; `lab pool down` gives them back.
 
-Design doc and build plan (published Artifact, versioned separately):
-<https://claude.ai/code/artifact/ef6ac6fe-d2c7-4b18-9a31-7342e0473826>
-
 ## Nodes
 
 | | Desktop | Laptop |
@@ -35,9 +92,15 @@ Design doc and build plan (published Artifact, versioned separately):
 | Power cap | 400 W | 175 W |
 | Host RAM | 31.9 GB | 63.4 GB |
 | Role | always-on serving + training | source builds + the sm_120 experiment |
+| Kernel | 7.0.0-31-generic | 7.0.0-34-generic |
+| docker-ce | 29.8.0 | 29.8.1 |
+| nvidia-container-toolkit | 1.20.0-1 | 1.20.1-1 |
 
-Both: Ubuntu 26.04.1, kernel 7.0.0-31-generic, driver 595.91.07, CUDA 13.2,
-docker-ce 29.8.0, nvidia-container-toolkit 1.20.0-1.
+Both: Ubuntu 26.04.1, driver 595.91.07, CUDA 13.2. The kernel, Docker and
+container-toolkit patch versions matched at Phase 0 and have since drifted
+apart (checked 2026-09-27). Under the "identical except the architecture"
+rule, that drift has to be closed, or ruled out as a cause, before a
+difference between the nodes is put down to the architecture.
 
 Connected by a direct 2.5GbE cable on a private /30 (`10.10.0.1` / `10.10.0.2`),
 0.55 ms RTT. See [host/](host/).
@@ -46,6 +109,22 @@ The link is also the pool's interconnect: ~280 MB/s NCCL, ~0.24 ms per token
 crossing, which is why a pipeline-parallel cut between the two cards is viable and
 a tensor-parallel one is not. The laptop runs no sshd, so control flows laptop →
 desktop only; that is why `lab pool` is driven from the laptop.
+
+## Phases and status
+
+The lab was built in phases against a design document that the code and docs
+call *the runbook*; comments cite its sections (§02, §06 and so on). The
+runbook itself is private. What each phase built and found is summarized
+here, and the detail is in [docs/](docs/).
+
+| Phase | What it built | Status |
+|---|---|---|
+| 0 | Host foundation: matched OS, driver, CUDA and container runtime on both nodes; the direct link; a shared model cache over NFS; one Dockerfile with two architecture targets. [host/](host/), [arch/](arch/) | Done 2026-09-13 |
+| 1 | Serving plane: vLLM behind llama-swap on each node, LiteLLM as the single front door, Prometheus and Grafana, and the first recorded baseline. [docs/phase1-serving-plane.md](docs/phase1-serving-plane.md) | Done 2026-09-13 |
+| 2 | Dev plane and kernel differential: the prebuilt vLLM image serves on sm_120 with no source build, and upstream kernel tests run and are compared on both architectures. [docs/phase2-dev-plane.md](docs/phase2-dev-plane.md), [docs/contributions.md](docs/contributions.md) | Done 2026-09-16; candidates triaged 2026-09-18, none filed yet |
+| 2b | QLoRA training on the 3090, then a held-out eval of research-assistant adapters. The pipeline works; LoRA taught style, not facts. [training/](training/), [bench/research_eval.py](bench/research_eval.py) | Done 2026-09-17 |
+| Pool | Both cards as one 48 GB device through pipeline parallelism, including a 4-bit 70B. [Pooling both cards](#pooling-both-cards) | Working, 70B since 2026-09-20; no systemd unit or auth yet |
+| 3 | sm-differ, a Rust CLI for cross-architecture regression diffs that reads its metrics from Prometheus. `diff` and `verdict` are built and tested; the Docker build driver and JUnit ingest are not. [kernels/sm-differ/](kernels/sm-differ/) | In progress (elective) |
 
 ## Contents
 
@@ -224,3 +303,29 @@ To confirm both nodes agree before a measurement run:
 
     git rev-parse --short HEAD
     ssh llm 'cd /home/david/gpu-lab && git rev-parse --short HEAD'
+
+## Adapting it to other hardware
+
+This repo is the live configuration of two specific machines, not a packaged
+tool. Site-specific values are written in rather than parametrized, because
+every path a systemd unit points at is deployed state. To run it elsewhere,
+these are the values to change:
+
+    10.10.0.1 / 10.10.0.2   direct-link addresses: host/, bin/lab, serving/,
+                            monitoring/prometheus.yml, bench/ scripts
+    /home/david/gpu-lab     checkout path: bin/lab, nodes/*/llama-swap.service,
+                            monitoring/
+    User=david              systemd units in nodes/ and monitoring/
+    llm                     ssh alias for the desktop over the direct link
+    /srv/model-cache        the shared Hugging Face cache (host/)
+    enp5s0 and its MAC      the desktop's link NIC (host/desktop-netplan-enp5s0.yaml)
+
+`bin/lab` identifies a node by compute capability (8.6 is the desktop, 12.0
+the laptop), falling back to the hostnames in the Nodes table. After changing
+a path that a unit points at, run `lab install` on each node.
+
+## License
+
+[MIT](LICENSE), except for 100 records in `training/research_dataset_v3.json`
+that come from databricks-dolly-15k and stay under CC BY-SA 3.0. See
+[training/DATA.md](training/DATA.md).
