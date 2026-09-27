@@ -10,7 +10,6 @@ off the stream's first content chunk rather than the total latency.
 """
 import argparse, json, random, statistics, sys, time, urllib.request
 
-MODEL = "hugging-quants/Meta-Llama-3.1-70B-Instruct-GPTQ-INT4"
 
 
 def ttft(base, model, numbers, max_tokens=8, timeout=300):
@@ -52,13 +51,16 @@ def ttft(base, model, numbers, max_tokens=8, timeout=300):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://10.10.0.1:8200")
-    ap.add_argument("--model", default=MODEL)
+    ap.add_argument("--model", default="", help="default: the first model the server lists")
     ap.add_argument("--samples", type=int, default=3)
     ap.add_argument("--label", default="")
     ap.add_argument("--out", default="")
     # counts chosen to land near the prompt_tokens of the recorded regime C
     ap.add_argument("--counts", default="20,70,160,325,480,650,850,975")
     a = ap.parse_args()
+    if not a.model:  # the pool lists its real name first, then "pool"
+        with urllib.request.urlopen(a.base.rstrip("/") + "/v1/models", timeout=30) as r:
+            a.model = json.load(r)["data"][0]["id"]
 
     rng = random.Random(20260922)
     rows = []
@@ -97,7 +99,7 @@ def main():
               f"{rows[i]['marginal_tok_s']} tok/s")
 
     if a.out:
-        json.dump({"label": a.label, "series": rows}, open(a.out, "w"), indent=2)
+        json.dump({"label": a.label, "model": a.model, "series": rows}, open(a.out, "w"), indent=2)
         print(f"\n  wrote {a.out}")
 
 
