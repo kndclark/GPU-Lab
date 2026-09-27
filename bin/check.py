@@ -70,6 +70,20 @@ def served(cfg):
     return set((cfg or {}).get("models", {}).keys())
 
 
+# The pool is not behind llama-swap: ray-head serves it on its own port, bound
+# to the desktop's link address, under an extra name. Read from bin/lab rather
+# than repeated here, so the two cannot drift.
+lab_src = open(os.path.join(REPO, "bin/lab")).read()
+m = re.search(r"^POOL_PORT=(\d+)$", lab_src, re.M)
+POOL_PORT = m.group(1) if m else None
+m = re.search(r"--served-model-name \$POOL_MODEL (\S+)", lab_src)
+POOL_NAME = m.group(1) if m else None
+m = re.search(r"^DESKTOP_ADDR=([\d.]+)", lab_src, re.M)
+POOL_HOST = m.group(1) if m else None
+if not (POOL_PORT and POOL_NAME and POOL_HOST):
+    fails.append("bin/lab: could not read POOL_PORT, DESKTOP_ADDR or the pool's served name")
+
+
 # ---- 3. every model LiteLLM publishes must exist on the node it points at ----
 # This is the check that earns its keep: a typo here is a 404 at request time on
 # a model the front door claims to serve, and nothing else catches it.
@@ -86,6 +100,14 @@ if litellm:
             fails.append(f"litellm '{name}': unparseable api_base {api_base!r}")
             continue
         host, port = m.group(1), m.group(2)
+        if POOL_PORT and port == POOL_PORT:
+            if host != POOL_HOST:
+                fails.append(f"litellm '{name}': the pool listens on {POOL_HOST}:{port} only, not {host}")
+            elif upstream != POOL_NAME:
+                fails.append(f"litellm '{name}': upstream '{upstream}' is not the pool's served name '{POOL_NAME}'")
+            else:
+                oks.append(f"litellm '{name}' -> pool {host}:{port} serves '{upstream}'")
+            continue
         if host not in BY_HOST:
             warns.append(f"litellm '{name}': api_base host {host} is not a known node")
             continue
@@ -122,6 +144,14 @@ if prom:
             if m:
                 proxied.setdefault(node, {})[m.group(1)] = mname
     for job in prom.get("scrape_configs", []):
+        if job.get("job_name") == "vllm-pool":
+            for sc in job.get("static_configs", []):
+                for target in sc.get("targets", []):
+                    if target == f"{POOL_HOST}:{POOL_PORT}":
+                        oks.append(f"prometheus {target} -> the pool")
+                    else:
+                        fails.append(f"prometheus vllm-pool scrapes {target}; the pool is {POOL_HOST}:{POOL_PORT}")
+            continue
         if job.get("job_name") != "vllm":
             continue
         for sc in job.get("static_configs", []):

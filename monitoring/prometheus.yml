@@ -25,6 +25,14 @@ scrape_configs:
       - targets: ['lab-laptop:8102']
         labels: {model: qwen3-embed, node: laptop, arch: sm_120}
 
+  # The pool (lab pool up): ray-head serves the whole model, so there is one
+  # target for both cards. Its own job because no llama-swap proxies it, which
+  # bin/check.py requires of every target in "vllm". Up only while pooled.
+  - job_name: vllm-pool
+    static_configs:
+      - targets: ['lab-desktop:8200']
+        labels: {model: pool, node: pooled, arch: sm_86+sm_120}
+
   - job_name: llama-swap
     static_configs:
       - targets: ['localhost:8080']
