@@ -521,6 +521,25 @@ pool_fits() {
     return 0
 }
 
+# After a pool_fits refusal: restart llama-swap on each node where pool_up
+# found it active. Arguments are what 'systemctl is-active' said before the
+# stop (laptop, desktop); "untouched" means pool_up never got that far.
+pool_restore_serving() {
+    say "restoring what pool up stopped"
+    if [ "$1" = active ]; then
+        sudo systemctl start llama-swap || true
+        ok "laptop  : llama-swap $(sudo systemctl is-active llama-swap || true)"
+    else
+        ok "laptop  : llama-swap left ${1:-unknown}, as found"
+    fi
+    case "$2" in
+        active)    on_desktop 'sudo systemctl start llama-swap' || true
+                   ok "desktop : llama-swap $(on_desktop 'sudo systemctl is-active llama-swap' || true)" ;;
+        untouched) ok "desktop : untouched" ;;
+        *)         ok "desktop : llama-swap left ${2:-unknown}, as found" ;;
+    esac
+}
+
 pool_up() {
     pool_require_driver up
     local n=1 total=5
@@ -573,15 +592,31 @@ pool_up() {
     # step was missed every time: the desktop's llama-swap stays active while the
     # pool takes its VRAM, LiteLLM keeps advertising qwen3-coder as reachable,
     # and the next request tries a cold load into the few GiB the pool left.
-    say "$((n++))/$total  stopping llama-swap on both nodes"
+    # The laptop goes first and is fit-checked before the desktop is touched:
+    # its display makes it the node that refuses, and stopping it costs nothing,
+    # while stopping the desktop evicts qwen3-coder. A refusal from either check
+    # restarts what this step stopped, so a refused 'pool up' changes nothing.
+    say "$((n++))/$total  stopping llama-swap, laptop first"
+    local l_was d_was d_total l_total
+    l_was=$(sudo systemctl is-active llama-swap || true)
     sudo systemctl stop llama-swap || true
     ok "laptop  : $(sudo systemctl is-active llama-swap || true)"
-    on_desktop 'sudo systemctl stop llama-swap' || true
-    ok "desktop : $(on_desktop 'sudo systemctl is-active llama-swap' || true)"
     for c in $(sudo docker ps --format '{{.Names}}' | grep '^qwen3-' || true); do
         ok "stopping loaded model: $c"
         sudo docker stop "$c" >/dev/null || true
     done
+    for _ in $(seq 1 30); do
+        [ "$(gpu_used_mib)" -lt "$GPU_IDLE_MIB" ] && break
+        sleep 2
+    done
+    l_total=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1)
+    if ! pool_fits "$l_total" "$(gpu_used_mib)" "laptop "; then
+        pool_restore_serving "$l_was" untouched
+        exit 1
+    fi
+    d_was=$(on_desktop 'sudo systemctl is-active llama-swap' || true)
+    on_desktop 'sudo systemctl stop llama-swap' || true
+    ok "desktop : $(on_desktop 'sudo systemctl is-active llama-swap' || true)"
     on_desktop 'for c in $(sudo docker ps --format "{{.Names}}" | grep "^qwen3-" || true); do sudo docker stop "$c" >/dev/null || true; done' || true
     if pool_wait_cards; then
         ok "both cards free (desktop $(desktop_gpu_used_mib) MiB, laptop $(gpu_used_mib) MiB)"
@@ -589,11 +624,11 @@ pool_up() {
         echo "  WARNING: desktop $(desktop_gpu_used_mib) MiB, laptop $(gpu_used_mib) MiB still in use;" >&2
         echo "           the pool needs ~20 GiB per card and may fail to allocate." >&2
     fi
-    local d_total l_total
-    l_total=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1)
     d_total=$(on_desktop 'nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits' 2>/dev/null | head -1)
-    pool_fits "$d_total" "$(desktop_gpu_used_mib)" "desktop" || exit 1
-    pool_fits "$l_total" "$(gpu_used_mib)" "laptop " || exit 1
+    if ! pool_fits "$d_total" "$(desktop_gpu_used_mib)" "desktop"; then
+        pool_restore_serving "$l_was" "$d_was"
+        exit 1
+    fi
 
     say "$((n++))/$total  ray cluster"
     on_desktop "sudo docker rm -f ray-head >/dev/null 2>&1 || true"
