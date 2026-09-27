@@ -1,7 +1,9 @@
 # Weight mirror on the laptop — plan
 
-**Status: plan only.** David approved writing it on 2026-09-26. Building any of
-it needs his separate go; nothing below exists yet.
+**Status: in use since 2026-09-27.** The laptop's `/srv/model-cache` is the
+mirror. Steps 1-5 are proven, and the wiring in 6 and 8; still open are the
+cable-unplugged proof (6), the pool regression (7) and the prune test (8). See
+"Build log" at the end.
 
 Tags: MEASURED = run for this plan on 2026-09-26; SOURCED = file:line;
 ARITHMETIC = computed from those; UNKNOWN = not established. GB = 10^9 bytes;
@@ -151,7 +153,7 @@ record nothing deploys.
 ## Steps
 
 Precondition for 5-7: no container mounts `/srv/model-cache` (one did while this
-was written: `ssu-ab-fi-simple`, ro). Commit only when David says.
+was written: `ssu-ab-fi-simple`, ro).
 
 | # | Step | Proven by |
 |---|---|---|
@@ -174,7 +176,7 @@ was written: `ssu-ab-fi-simple`, ro). Commit only when David says.
 - **Code:** `git revert`; the push redeploys the desktop, which it never touched.
   **Data:** `/srv/model-mirror` stays, inert; deleting it is David's call.
 
-## Open questions for David
+## Decisions
 
 1. **Repoint the laptop's `/srv/model-cache` at the mirror (decision 3)?** It
    changes what the path means on one node. *Recommend yes*: the only option
@@ -199,7 +201,6 @@ eight Qwen3-14B `.incomplete` files each had a finished blob of the same hash th
 snapshot links to (15/15 links resolve), so all eight were deleted; 0 `.incomplete`
 left, snapshot still 0 broken links, desktop free 536G -> 541G. Six more `trees/*.json`
 are 0600 but owned by david, so readable by the sync; left as they are.
-Implementation (steps above) not started.
 
 ## Survey corrections
 
@@ -210,3 +211,20 @@ snapshot paths follow `$HF_HOME`. New: the unreadable `trees/*.json`, no
 `HF_HUB_OFFLINE` anywhere, writes into the cache root. Not ours to fix:
 host/desktop-exports.d-model-cache.exports says `/etc/exports.d/`; the line is
 in `/etc/exports:11` [MEASURED].
+
+## Build log (laptop; 2026-09-26 unless dated)
+
+| # | Result | Tag |
+|---|---|---|
+| 1 | rsync over ssh, cable, Embedding-0.6B blobs: 1,207,489,041 B in 4.36 s = 277 MB/s, above the 200 MB/s gate, so the cable path uses rsync. sha256 of a 1.19 GB shard: 1.82 s, but the shard was still in page cache, so disk-bound hashing is slower. Wi-Fi rate: not measured | MEASURED; UNKNOWN |
+| 2 | `/srv/model-mirror` created (david:david 755). `GPU_LAB_NODE=desktop lab mirror status` refuses, exit 1. Laptop: 9 repos + adapters, all behind, 261.52 GB total; 0 unreadable (the chmod fixed both) | MEASURED |
+| 3 | First sync: 261.52 GB in 1,011 s (259 MB/s incl. hashing), result ok; 202 blobs hashed on arrival, 0 quarantined; manifest 538 paths; `status` all 10 groups current. `verify`: 202 blobs, 0 mismatched, 0 dangling links, 122 s. `g0_verify.py` on the mirror's Lightning BF16 snapshot a9904d24: pass, 65,845,713,051 B, 0 failures | MEASURED |
+| 4 | `kill -9` of the whole process group 6 s into a 3,996,250,744 B Qwen3-8B shard: the shard never appeared under its final name; snapshots/ and refs/ unchanged. **Correction to decision 5:** SIGKILL cannot save a partial to `--partial-dir`, so rsync's temp file `.<hash>.XXXXXX` was orphaned in blobs/ and the re-run re-copied 4,184,414,352 B (no resume). Fix: `mirror_sweep_temps` runs under the lock at sync start and moves each such temp into `.rsync-partial/` (or drops it if the final file exists). Re-test: re-run received 2,636,487,902 B for the 3,996,250,744 B shard (resumed), 0 stray entries, verify 12 blobs 0 mismatched. SIGINT/SIGTERM path: not tested | MEASURED |
+| 5 | 2026-09-27. `/etc/fstab` lines 14-15 are lines 3 and 7 of host/laptop-fstab-model-cache.line; backup `/etc/fstab.pre-mirror-2026-09-27`. `findmnt`: `/srv/model-cache` = `/dev/nvme1n1p3[/srv/model-mirror]` ext4 `ro`; `/srv/model-cache-nfs` automounts `10.10.0.1:/srv/model-cache` nfs4 on first access. The `touch` in vllm/vllm-openai:v0.29.0 fails "Read-only file system". Reboot: not tested | MEASURED |
+| 6 | 2026-09-27. Wired: `HF_HUB_OFFLINE=1`, the `up` preflight, the `pool_up` check, training/run.sh. `up` preflight, run on a copy of bin/lab with the peer set to an unreachable address and an exit after the preflight: mirror mounted, it warns with the last sync and carries on (exit 0); with the mirror check forced false, the old refusal (exit 1). `pool_up` check, on a copy with `MIRROR` pointed at an empty directory: repo absent refuses; repo present but empty refuses "32 file(s) behind"; both before llama-swap is touched. Cable-unplugged proof: not run | MEASURED |
+| 8 | 2026-09-27, partial. `lab status` ends with the mirror section (ro, last sync, 10 groups current). With the lock held, `status` names the pid; released, no line. `down` names a running sync the same way (shared helper; `down`'s own output not yet read). check.py: 16 ok; with the record altered, it warns (exit 0), and restored it passes. Prune test: not run | MEASURED |
+
+Bug found and fixed while building: under `set -euo pipefail`, `du` on a
+not-yet-created path made the first sync exit 1 silently after its header.
+
+Free on the laptop after the sync: 382 GiB (was 626 GiB).

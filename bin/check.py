@@ -11,6 +11,7 @@ Exit 0 = safe to push. Exit 1 = something would break on the other side.
 """
 import os
 import re
+import socket
 import subprocess
 import sys
 
@@ -150,6 +151,30 @@ if os.path.exists(unit):
                 )
             elif m:
                 oks.append(f"installed unit config exists ({rel(m.group(1))})")
+
+# ---- 6b. the laptop's model-cache mounts match their record (laptop only) ----
+# host/ is a record nothing deploys, so the only way the two drift apart is a
+# hand edit on one side -- and the record is what a rebuild would restore.
+# Node by override or hostname, as bin/lab's detect_node falls back to.
+if (os.environ.get("GPU_LAB_NODE") or socket.gethostname()) in ("laptop", "david-Legion-Pro-7-16IAX10H"):
+    record = "host/laptop-fstab-model-cache.line"
+
+    def mount_lines(path):
+        return {
+            tuple(line.split())
+            for line in open(path)
+            if line.strip() and not line.lstrip().startswith("#")
+            and line.split()[1:2] in (["/srv/model-cache"], ["/srv/model-cache-nfs"])
+        }
+
+    want, have = mount_lines(os.path.join(REPO, record)), mount_lines("/etc/fstab")
+    if want == have:
+        oks.append(f"/etc/fstab model-cache lines match {record}")
+    else:
+        warns.append(
+            f"/etc/fstab model-cache lines differ from {record} "
+            f"(only in fstab: {len(have - want)}, only in the record: {len(want - have)})"
+        )
 
 # ---- 7. the Rust tools must still build and pass their own tests ----
 #

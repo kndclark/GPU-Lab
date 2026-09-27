@@ -49,7 +49,7 @@ flowchart LR
         swapL["llama-swap :8080"]
         vllmL["vLLM"]
         poolL["pool stage<br/>Ray worker"]
-        cacheL[("model cache<br/>NFS mount")]
+        cacheL[("local mirror<br/>read-only")]
     end
     client -->|per-node mode| litellm
     litellm --> swapD --> vllmD
@@ -58,7 +58,7 @@ flowchart LR
     poolD <==>|"activations<br/>over 2.5GbE"| poolL
     prom -.->|scrape| swapD
     prom -.->|scrape| swapL
-    cache -.->|NFS| cacheL
+    cache -.->|"rsync<br/>lab mirror sync"| cacheL
 ```
 
 
@@ -165,7 +165,15 @@ right thing for whichever one it is on:
     lab reload  [svc]        apply edited config files (they are read-only mounts)
     lab check                validate configs before a push deploys them
     lab install              (re)write this node's systemd unit from the repo
-    lab logs    <svc>        follow logs (llama-swap|litellm|prometheus|grafana|model|pool)
+    lab logs    <svc>        follow logs (llama-swap|litellm|prometheus|grafana|model|pool|mirror)
+    lab mirror  status       laptop: is the local weight copy current (read-only)
+                sync [--wifi] [--force] [repo...]   copy + hash-check from the desktop
+                verify [repo...]  re-hash every blob;  prune [--apply]  report stale files
+
+The laptop loads weights from a local mirror of the desktop's model cache, so it
+serves the same bytes with the cable in or out. `lab mirror sync` is the only
+writer and is run by hand; every file is hash-checked against its name on arrival
+([docs/weight-mirror-plan.md](docs/weight-mirror-plan.md)).
 
 The front door is LiteLLM on the desktop, OpenAI-compatible:
 
@@ -230,8 +238,10 @@ except `POOL_MAX_BATCHED_TOKENS`, which defaults to 512 rather than vLLM's resol
       bin/lab pool up
 
 `POOL_WAIT_SECS` matters because the two stages do not load symmetrically. The
-desktop reads the checkpoint from local EXT4 (it is the NFS server) and finishes
-in ~12 s; the laptop pulls its identical 18.44 GiB half over NFS and takes ~124 s.
+desktop reads the checkpoint from local EXT4 and finishes in ~12 s; the laptop
+took ~124 s to pull its identical 18.44 GiB half over NFS. It now reads the
+local mirror instead, and `lab pool up` refuses if the mirror is behind the
+desktop for `POOL_MODEL`.
 
 At `POOL_GPU_UTIL=0.92` the laptop preflight passes with about 93 MiB of margin,
 and the laptop drives a display — close the browser *before* `lab pool up`. Once
@@ -325,6 +335,7 @@ these are the values to change:
     User=david              systemd units in nodes/ and monitoring/
     llm                     ssh alias for the desktop over the direct link
     /srv/model-cache        the shared Hugging Face cache (host/)
+    /srv/model-mirror       the laptop's local copy of it (bin/lab, host/)
     enp5s0 and its MAC      the desktop's link NIC (host/desktop-netplan-enp5s0.yaml)
 
 `bin/lab` identifies a node by compute capability (8.6 is the desktop, 12.0

@@ -11,7 +11,10 @@
 #   lab reload  [svc]        apply edited config files (they are read-only mounts)
 #   lab check                validate configs before a push deploys them
 #   lab install              (re)write this node's systemd unit from the repo
-#   lab logs    <svc>        follow logs (llama-swap|litellm|prometheus|grafana|model|pool)
+#   lab logs    <svc>        follow logs (llama-swap|litellm|prometheus|grafana|model|pool|mirror)
+#   lab mirror  status       laptop: is the local weight copy current (read-only)
+#               sync [--wifi] [--force] [repo...]   copy + hash-check from the desktop
+#               verify [repo...]  re-hash every blob;  prune [--apply]  report stale files
 #== end usage ==
 #
 # Node roles differ, so the script's work differs:
@@ -127,7 +130,7 @@ detect_node() {
 # Usage is answered before the node gate: on a third machine "lab" used to print
 # its own help, and a node-detection failure should not take that away.
 case "${1:-}" in
-    up|down|pool|status|reload|logs|check|install) ;;
+    up|down|pool|status|reload|logs|check|install|mirror) ;;
     *) awk '/^#== usage ==/{f=1;next} /^#== end usage ==/{f=0} f' "$0" | sed 's/^# \?//'; exit 1 ;;
 esac
 
@@ -192,20 +195,36 @@ peer_addr() { case "$NODE" in desktop) echo 10.10.0.2 ;; laptop) echo 10.10.0.1 
 on_desktop() { ssh -o ConnectTimeout=5 llm "$@"; }
 desktop_gpu_used_mib() { on_desktop 'nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits' 2>/dev/null | head -1; }
 
+# True when this node's /srv/model-cache is the local mirror's bind mount
+# (host/laptop-fstab-model-cache.line), not NFS from the desktop.
+cache_is_mirror() {
+    case "$(findmnt -n -o SOURCE /srv/model-cache 2>/dev/null | tail -1)" in
+        *model-mirror*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 cmd_up() {
     local n=1 total=$(( HAS_COMPOSE ? 4 : 3 ))
 
-    # Preflight, and it must come first. This node's weights arrive over the
-    # direct link (/srv/model-cache is NFS from the desktop) and the unit carries
-    # RequiresMountsFor, so a wedged I226 makes "systemctl start" fail with an
-    # opaque mount error -- and set -e would kill this script before reaching the
-    # repair hint written for exactly this case.
+    # Preflight, and it must come first. The unit carries RequiresMountsFor
+    # /srv/model-cache. When that is the local mirror, a down link costs only
+    # freshness, so say how old the copy is and carry on. When it is still NFS,
+    # a wedged I226 makes "systemctl start" fail with an opaque mount error --
+    # and set -e would kill this script before reaching the repair hint.
     if [ "$HAS_COMPOSE" = 0 ] && ! ping -c1 -W2 "$(peer_addr)" >/dev/null 2>&1; then
         echo "  direct link to $(peer_addr) is DOWN." >&2
-        echo "  /srv/model-cache is NFS over that link and the unit requires it," >&2
-        echo "  so llama-swap cannot start. Repair, then retry:" >&2
-        echo "    sudo /usr/local/sbin/gpu-lab-igc-resume-repair" >&2
-        exit 1
+        if cache_is_mirror; then
+            echo "  starting anyway: weights come from the local mirror." >&2
+            echo "  last sync: $(cat "$MIRROR_STATE/last-sync" 2>/dev/null || echo never)" >&2
+            echo "  but nothing can reach this node until the link is repaired:" >&2
+            echo "    sudo /usr/local/sbin/gpu-lab-igc-resume-repair" >&2
+        else
+            echo "  /srv/model-cache is NFS over that link and the unit requires it," >&2
+            echo "  so llama-swap cannot start. Repair, then retry:" >&2
+            echo "    sudo /usr/local/sbin/gpu-lab-igc-resume-repair" >&2
+            exit 1
+        fi
     fi
 
     # Starting the serving plane during a kernel differential ruins the run: the
@@ -394,6 +413,14 @@ cmd_down() {
         ok "note: everything returns on reboot. use --boot-off to prevent that."
     fi
 
+    # Not stopped: a mirror sync holds no GPU. Named, so an idle card does not
+    # read as an idle machine -- it is still using the link and the disk.
+    local pid
+    if pid=$(mirror_sync_pid); then
+        ok "a mirror sync is still running (pid $pid), copying over the link."
+        ok "  follow it: lab logs mirror"
+    fi
+
     if [ "$gpu_only" = 1 ]; then
         if [ "$HAS_COMPOSE" = 1 ]; then
             ok "front door still UP -- models on this node are gone, but LiteLLM"
@@ -511,6 +538,34 @@ pool_up() {
         exit 1
     fi
     ok "no kernel or training run in the way"
+
+    # The worker loads the laptop's half offline from /srv/model-cache. When
+    # that is the mirror, a file the desktop has and the mirror lacks fails the
+    # load minutes in, after both serving planes are down. Checked here with
+    # the dry run 'lab mirror status' uses, so the two cannot disagree.
+    if cache_is_mirror; then
+        local repo="models--${POOL_MODEL//\//--}" behind rc=0
+        local -a ex
+        if [ ! -d "$MIRROR/hub/$repo" ]; then
+            echo "  $POOL_MODEL is not in the mirror. copy it first:" >&2
+            echo "    $REPO/bin/lab mirror sync $repo" >&2
+            exit 1
+        fi
+        mapfile -t ex < <(mirror_excl "hub/$repo/")
+        behind=$(rsync -an --exclude='*.incomplete' --exclude=.rsync-partial/ "${ex[@]}" \
+                    --out-format='%n' "$MIRROR_HOST:$MIRROR_SRC/hub/$repo/" "$MIRROR/hub/$repo/") || rc=$?
+        if [ "$rc" != 0 ]; then
+            echo "  could not compare $repo with the desktop (rsync exit $rc)." >&2
+            exit 1
+        fi
+        behind=$(printf '%s\n' "$behind" | grep -v '/$' | grep -c . || true)
+        if [ "$behind" != 0 ]; then
+            echo "  the mirror is $behind file(s) behind the desktop for $POOL_MODEL:" >&2
+            echo "    $REPO/bin/lab mirror sync $repo" >&2
+            exit 1
+        fi
+        ok "$POOL_MODEL current in the mirror (last sync $(cut -d' ' -f1 "$MIRROR_STATE/last-sync" 2>/dev/null || echo never))"
+    fi
 
     # On both nodes, and the desktop is the one that matters. Driven by hand this
     # step was missed every time: the desktop's llama-swap stays active while the
@@ -758,6 +813,12 @@ pooled     http://$DESKTOP_ADDR:$POOL_PORT/v1/models"
         name=${u%% *}; addr=${u##* }
         if curl -sf "$addr" >/dev/null 2>&1; then ok "$name OK"; else ok "$name DOWN"; fi
     done <<< "$endpoints"
+
+    # Last, because it is the slow part (an ssh dry run), and in an || so a
+    # failure inside it cannot end status early under set -e.
+    if [ "$NODE" = laptop ] && [ -d "$MIRROR" ]; then
+        cmd_mirror_status || ok "mirror status failed (exit $?)"
+    fi
 }
 
 # Config files reach these services as read-only bind mounts, so editing one on
@@ -878,6 +939,362 @@ cmd_reload() {
     say "reloaded ($NODE)."
 }
 
+# ---- lab mirror: the laptop's local, verified copy of the desktop's weights ----
+# docs/weight-mirror-plan.md is the why. In short: the laptop reads its models
+# from this copy, only the desktop is ever written, and the copy changes only
+# here. HF names each blob after its own hash, so every blob that arrives is
+# checked against its name before any pointer that reaches it is copied: a
+# loader sees the old revision or the complete, verified new one, never a
+# half-written shard under a name it will open.
+MIRROR=/srv/model-mirror
+MIRROR_STATE=$MIRROR/.lab-mirror
+MIRROR_SRC=/srv/model-cache            # the desktop's path, read over ssh
+MIRROR_MIN_FREE=100000000000           # refuse a sync that would leave < 100 GB
+MIRROR_HOST=llm                        # --wifi switches to llm-wifi
+
+mirror_require() {
+    if [ "$NODE" != laptop ]; then
+        echo "  the desktop is the mirror's source; 'lab mirror' runs on the laptop." >&2
+        exit 1
+    fi
+    if [ ! -d "$MIRROR" ]; then
+        echo "  $MIRROR does not exist:  sudo install -d -o $USER -g $USER $MIRROR" >&2
+        exit 1
+    fi
+}
+
+mirror_reachable() { ssh -o ConnectTimeout=5 "$MIRROR_HOST" true >/dev/null 2>&1; }
+
+# The pid of a sync holding the lock; fails when none is running.
+mirror_sync_pid() {
+    [ -f "$MIRROR_STATE/lock" ] && ! flock -n "$MIRROR_STATE/lock" true || return 1
+    cat "$MIRROR_STATE/lock.pid" 2>/dev/null || echo '?'
+}
+
+# stdin: NUL-separated blob paths. stdout: the ones whose content does not hash
+# to their name. 64 hex is a sha256 (LFS files); 40 hex is git's blob sha1
+# (small files). Anything else cannot be checked, and says so on stderr.
+mirror_check_blobs() {
+    xargs -r -0 -n 1 -P 8 sh -c '
+        f=$1; n=${f##*/}
+        case ${#n} in
+            64) h=$(sha256sum < "$f" | cut -c1-64) ;;
+            40) h=$(git hash-object --no-filters "$f") ;;
+            *)  echo "  unverifiable name: $f" >&2; exit 0 ;;
+        esac
+        [ "$h" = "$n" ] || printf "%s\n" "$f"' sh
+}
+
+# Anchored --exclude lines for each unreadable source file under prefix $1,
+# relative to a transfer rooted there. Unreadable files are named and skipped,
+# not fatal: otherwise every run would exit 23 over one file.
+mirror_excl() {
+    local p
+    [ -f "$MIRROR_STATE/unreadable" ] || return 0
+    while IFS= read -r p; do
+        case "$p" in "$1"*) printf -- '--exclude=/%s\n' "${p#"$1"}" ;; esac
+    done < "$MIRROR_STATE/unreadable"
+}
+
+# Files (and links) under hub/ and adapters/, relative, sorted; $1 = local|remote.
+mirror_list() {
+    local q="find hub adapters -mindepth 1 \\( -type f -o -type l \\) ! -name '*.incomplete' ! -path 'hub/.locks/*' ! -path '*/.rsync-partial/*' ! -path 'hub/CACHEDIR.TAG' 2>/dev/null | LC_ALL=C sort"
+    if [ "$1" = remote ]; then
+        ssh "$MIRROR_HOST" "cd $MIRROR_SRC && $q"
+    else
+        ( cd "$MIRROR" && eval "$q" ) || true
+    fi
+}
+
+# The desktop's list, or failure. Bash ignores a failing <( ), so a dropped ssh
+# or an unmounted disk behind the desktop's /srv/model-cache would otherwise
+# read as "the desktop has nothing" -- and prune would call every file stale.
+mirror_remote_list() {
+    local out
+    out=$(mirror_list remote) || return 1
+    # A here-string, not a pipe: grep -q exits at the first match, and under
+    # pipefail printf's resulting SIGPIPE (141) failed this check at random.
+    grep -q '^hub/' <<<"$out" || return 1
+    printf '%s\n' "$out"
+}
+
+# hub/<repo>/... -> hub/<repo>; adapters/... -> adapters
+mirror_group() { awk -F/ '{ print ($1 == "hub") ? $1 "/" $2 : $1 }'; }
+
+cmd_mirror_status() {
+    say "mirror ($MIRROR)"
+    local mnt
+    mnt=$(findmnt -n -o SOURCE,FSTYPE,OPTIONS /srv/model-cache 2>/dev/null | tail -1 || true)
+    ok "/srv/model-cache : ${mnt:-not mounted}"
+    case "$mnt" in
+        *model-mirror*|/dev/*) case ",${mnt##* }," in *,ro,*) ok "                   the mirror, read-only" ;; *) ok "                   the mirror, but NOT read-only" ;; esac ;;
+        *nfs*) ok "                   NFS from the desktop (the mirror is not in use yet)" ;;
+    esac
+    ok "last sync        : $(cat "$MIRROR_STATE/last-sync" 2>/dev/null || echo never)"
+    ok "free             : $(df -h --output=avail "$MIRROR" | tail -1 | tr -d ' ') on $(df --output=target "$MIRROR" | tail -1)"
+    local pid
+    if pid=$(mirror_sync_pid); then
+        ok "a sync is running: pid $pid"
+    fi
+    if ! mirror_reachable; then
+        ok "freshness unknown (link down)"
+        return 0
+    fi
+    # Behind: what a sync would copy, from rsync's own dry run, so status and
+    # sync cannot disagree about what "current" means.
+    local remote behind extras rc=0
+    if ! remote=$(mirror_remote_list); then
+        ok "freshness unknown (the desktop's file list came back empty or failed)"
+        return 0
+    fi
+    behind=$(rsync -an --exclude='*.incomplete' --exclude=.rsync-partial/ --exclude=/hub/.locks/ \
+                --include=/hub/ --include='/hub/*--*/***' --include='/adapters/***' --exclude='*' \
+                --out-format='%l %n' "$MIRROR_HOST:$MIRROR_SRC/" "$MIRROR/") || rc=$?
+    # 23/24 (some files unreadable or vanished) still list the rest; anything
+    # else means an empty "behind" proves nothing.
+    case "$rc" in
+        0|23|24) ;;
+        *) ok "freshness unknown (dry run failed: rsync exit $rc)"; return 0 ;;
+    esac
+    behind=$(printf '%s\n' "$behind" | grep -v '/$' || true)
+    extras=$(LC_ALL=C comm -13 <(printf '%s\n' "$remote") <(mirror_list local))
+    {
+        printf '%s\n' "$remote" | mirror_group
+        printf '%s\n' "$extras" | grep . | mirror_group || true
+    } | LC_ALL=C sort -u | while read -r g; do
+        local b bf e
+        b=$(printf '%s\n' "$behind" | awk -v g="$g/" 'index($2, g) == 1 { n++; s += $1 } END { printf "%d %.2f", n, s / 1e9 }')
+        e=$(printf '%s\n' "$extras" | grep -c "^$g/" || true)
+        bf=${b% *}
+        if [ "$bf" = 0 ] && [ "$e" = 0 ]; then
+            ok "$(printf '%-70s current' "$g")"
+        else
+            ok "$(printf '%-70s behind %s files, %s GB; extra %s' "$g" "$bf" "${b#* }" "$e")"
+        fi
+    done
+    if [ -s "$MIRROR_STATE/unreadable" ]; then
+        ok "unreadable on the desktop at the last sync (skipped):"
+        sed 's/^/    /' "$MIRROR_STATE/unreadable"
+    fi
+}
+
+# A sync killed with SIGKILL (or a power cut) cannot save its partial file to
+# --partial-dir, so rsync's temp file (".<name>.XXXXXX") is left beside the
+# blobs: never under a name a loader opens, but orphaned, and the next run
+# starts that shard from zero. Run under the lock, so no rsync is writing:
+# move each into .rsync-partial/ to resume from, or drop it if the finished
+# file already arrived. Every such file was written by a sync.
+mirror_sweep_temps() {
+    local t d n swept=0
+    while IFS= read -r -d '' t; do
+        d=${t%/*}; n=${t##*/}; n=${n#.}; n=${n%.*}
+        if [ -e "$d/$n" ]; then
+            rm -f -- "$t"
+        else
+            mkdir -p "$d/.rsync-partial" && mv -f -- "$t" "$d/.rsync-partial/$n"
+        fi
+        swept=$(( swept + 1 ))
+    done < <(find "$MIRROR/hub" "$MIRROR/adapters" -type f -regextype posix-extended \
+                 -regex '.*/\.[^/]+\.[A-Za-z0-9]{6}' ! -path '*/.rsync-partial/*' -print0 2>/dev/null)
+    [ "$swept" = 0 ] || ok "recovered $swept temp file(s) left by an interrupted sync"
+}
+
+cmd_mirror_sync() {
+    local force=0 route=cable a
+    local -a repos=()
+    for a in "$@"; do
+        case "$a" in
+            --wifi)  MIRROR_HOST=llm-wifi; route=wifi ;;
+            --force) force=1 ;;
+            -*) echo "usage: lab mirror sync [--wifi] [--force] [repo...]" >&2; exit 1 ;;
+            *)  repos+=("$a") ;;
+        esac
+    done
+    # The sync shares the cable with pool NCCL and the disk with model loads,
+    # so a measurement taken during one would partly be measuring the sync.
+    local busy
+    busy=$(sudo docker ps --format '{{.Names}}' | grep -E '^(ray-worker|gpu-lab-kernels|gpu-lab-training)$' || true)
+    if [ -n "$busy" ] && [ "$force" = 0 ]; then
+        echo "  refusing: $busy is running, and the sync would share its cable and disk." >&2
+        echo "  --force overrides." >&2
+        exit 1
+    fi
+    mkdir -p "$MIRROR_STATE"
+    touch "$MIRROR_STATE/manifest"
+    exec 9>"$MIRROR_STATE/lock"
+    if ! flock -n 9; then
+        echo "  another sync holds the lock: pid $(cat "$MIRROR_STATE/lock.pid" 2>/dev/null || echo '?')" >&2
+        exit 1
+    fi
+    echo $$ > "$MIRROR_STATE/lock.pid"
+    if ! mirror_reachable; then
+        echo "  cannot ssh to $MIRROR_HOST (route: $route)." >&2
+        exit 1
+    fi
+    exec > >(tee -a "$MIRROR_STATE/sync.log") 2>&1
+    say "mirror sync $(date -Is) route=$route host=$MIRROR_HOST"
+    mirror_sweep_temps
+
+    local need have free
+    need=$(ssh "$MIRROR_HOST" "cd $MIRROR_SRC && du -sb --exclude='*.incomplete' hub adapters" | awk '{ s += $1 } END { print s + 0 }')
+    # du exits 1 for a path not yet created (the first sync); pipefail would end the script.
+    have=$( (du -sb "$MIRROR"/hub "$MIRROR"/adapters 2>/dev/null || true) | awk '{ s += $1 } END { print s + 0 }')
+    free=$(df -B1 --output=avail "$MIRROR" | tail -1 | tr -d ' ')
+    if [ $(( free - (need - have) )) -lt "$MIRROR_MIN_FREE" ]; then
+        echo "  refusing: would leave $(( (free - need + have) / 1000000000 )) GB free, under the 100 GB floor." >&2
+        exit 1
+    fi
+
+    ssh "$MIRROR_HOST" "cd $MIRROR_SRC && find hub adapters ! -readable -type f 2>/dev/null" > "$MIRROR_STATE/unreadable" || true
+    if [ -s "$MIRROR_STATE/unreadable" ]; then
+        ok "unreadable on the desktop, skipped:"
+        sed 's/^/    /' "$MIRROR_STATE/unreadable"
+    fi
+    if [ ${#repos[@]} = 0 ]; then
+        mapfile -t repos < <(ssh "$MIRROR_HOST" "ls $MIRROR_SRC/hub" | grep -E '^(models|datasets|spaces)--')
+        # A failed listing must not read as "nothing to copy": the run would
+        # sync only adapters and still report ok.
+        if [ ${#repos[@]} = 0 ]; then
+            echo "  the desktop's hub/ listing came back empty or failed; not syncing." >&2
+            exit 1
+        fi
+        repos+=(adapters)
+    fi
+
+    local t0=$SECONDS bytes0 r new bad rc
+    local -a ex failed=()
+    bytes0=$(du -sb "$MIRROR" | cut -f1)
+    : > "$MIRROR_STATE/manifest.new"
+    for r in "${repos[@]}"; do
+        if [ "$r" = adapters ]; then
+            # Not content-named: rsync's size+mtime check, then its whole-file
+            # transfer checksum. Each file lands by rename.
+            ok "adapters"
+            mapfile -t ex < <(mirror_excl adapters/)
+            rc=0
+            rsync -a --partial-dir=.rsync-partial --exclude='*.incomplete' "${ex[@]}" \
+                  --out-format='adapters/%n' "$MIRROR_HOST:$MIRROR_SRC/adapters/" "$MIRROR/adapters/" \
+                  >> "$MIRROR_STATE/manifest.new" || rc=$?
+            [ "$rc" = 0 ] || failed+=("adapters (rsync exit $rc)")
+            continue
+        fi
+        # (a) blobs. --size-only is right here and only here: the name is the
+        # hash, so same name + same size is the same file. rsync writes each to
+        # a temp name and renames it when complete; --partial-dir keeps an
+        # interrupted shard to resume from.
+        ok "$r: blobs"
+        mkdir -p "$MIRROR/hub/$r/blobs"
+        mapfile -t ex < <(mirror_excl "hub/$r/blobs/")
+        rc=0
+        new=$(rsync -a --size-only --partial-dir=.rsync-partial --exclude='*.incomplete' "${ex[@]}" \
+                    --out-format='%n' "$MIRROR_HOST:$MIRROR_SRC/hub/$r/blobs/" "$MIRROR/hub/$r/blobs/") || rc=$?
+        new=$(printf '%s\n' "$new" | grep -v -e '/$' -e '^$' || true)
+        if [ "$rc" != 0 ]; then
+            failed+=("$r (rsync exit $rc; pointers not updated)"); continue
+        fi
+        # (b) every newly arrived blob against its own name.
+        if [ -n "$new" ]; then
+            ok "$r: hashing $(printf '%s\n' "$new" | wc -l) new blob(s)"
+            bad=$(printf '%s\n' "$new" | sed "s|^|$MIRROR/hub/$r/blobs/|" | tr '\n' '\0' | mirror_check_blobs)
+            if [ -n "$bad" ]; then
+                mkdir -p "$MIRROR_STATE/quarantine/$r"
+                printf '%s\n' "$bad" | while IFS= read -r f; do mv -f "$f" "$MIRROR_STATE/quarantine/$r/"; done
+                failed+=("$r ($(printf '%s\n' "$bad" | wc -l) blob(s) did not match their names; quarantined; pointers not updated)")
+                continue
+            fi
+            printf '%s\n' "$new" | sed "s|^|hub/$r/blobs/|" >> "$MIRROR_STATE/manifest.new"
+        fi
+        # (c) only now the pointers: snapshots/, refs/, trees/. Default
+        # size+mtime check, because refs/main is always 40 bytes and
+        # --size-only would never copy a moved ref.
+        ok "$r: pointers"
+        mapfile -t ex < <(mirror_excl "hub/$r/")
+        rc=0
+        rsync -a --partial-dir=.rsync-partial --exclude=/blobs/ --exclude='*.incomplete' "${ex[@]}" \
+              --out-format="hub/$r/%n" "$MIRROR_HOST:$MIRROR_SRC/hub/$r/" "$MIRROR/hub/$r/" \
+              >> "$MIRROR_STATE/manifest.new" || rc=$?
+        [ "$rc" = 0 ] || failed+=("$r (pointers: rsync exit $rc)")
+    done
+
+    # The manifest is every path this command ever wrote; prune --apply may
+    # delete only those, so it cannot touch anything a person put here.
+    grep -v '/$' "$MIRROR_STATE/manifest.new" | LC_ALL=C sort -u - "$MIRROR_STATE/manifest" 2>/dev/null \
+        > "$MIRROR_STATE/manifest.tmp" || true
+    mv "$MIRROR_STATE/manifest.tmp" "$MIRROR_STATE/manifest"
+    rm -f "$MIRROR_STATE/manifest.new"
+
+    local result=ok gb
+    [ ${#failed[@]} = 0 ] || result="FAILED:${#failed[@]}"
+    gb=$(awk -v a="$bytes0" -v b="$(du -sb "$MIRROR" | cut -f1)" 'BEGIN { printf "%.2f", (b - a) / 1e9 }')
+    echo "$(date -Is) route=$route copied=${gb}GB secs=$(( SECONDS - t0 )) result=$result" > "$MIRROR_STATE/last-sync"
+    say "sync: $result, ${gb} GB in $(( SECONDS - t0 )) s"
+    local f
+    for f in "${failed[@]}"; do ok "failed: $f"; done
+    [ "$result" = ok ]
+}
+
+cmd_mirror_verify() {
+    local -a repos=("$@")
+    local r n bad dang total=0 totbad=0
+    [ ${#repos[@]} -gt 0 ] || mapfile -t repos < <(ls "$MIRROR/hub" 2>/dev/null)
+    say "mirror verify: every blob against its own name"
+    for r in "${repos[@]}"; do
+        [ -d "$MIRROR/hub/$r/blobs" ] || { ok "$r: no blobs"; continue; }
+        n=$(find "$MIRROR/hub/$r/blobs" -maxdepth 1 -type f | wc -l)
+        bad=$(find "$MIRROR/hub/$r/blobs" -maxdepth 1 -type f -print0 | mirror_check_blobs)
+        dang=$( (find "$MIRROR/hub/$r/snapshots" -xtype l 2>/dev/null || true) | wc -l)
+        total=$(( total + n ))
+        [ -z "$bad" ] || totbad=$(( totbad + $(printf '%s\n' "$bad" | wc -l) ))
+        ok "$(printf '%-70s %4d blobs, %d mismatched, %d dangling links' "$r" "$n" \
+             "$([ -z "$bad" ] && echo 0 || printf '%s\n' "$bad" | wc -l)" "$dang")"
+        [ -z "$bad" ] || printf '%s\n' "$bad" | sed 's/^/    MISMATCH /'
+    done
+    say "verify: $total blobs, $totbad mismatched"
+    [ "$totbad" = 0 ]
+}
+
+# Stale = in the mirror, gone from the desktop. Reported, never deleted by
+# default; --apply deletes only the stale paths a sync recorded writing.
+cmd_mirror_prune() {
+    local apply=0
+    touch "$MIRROR_STATE/manifest"
+    [ "${1:-}" = --apply ] && apply=1
+    mirror_reachable || { echo "  cannot reach the desktop, so cannot tell what is stale." >&2; exit 1; }
+    local remote extras ours
+    if ! remote=$(mirror_remote_list); then
+        echo "  the desktop's file list came back empty or failed, so nothing can be called stale." >&2
+        exit 1
+    fi
+    extras=$(LC_ALL=C comm -13 <(printf '%s\n' "$remote") <(mirror_list local))
+    say "mirror prune$([ "$apply" = 1 ] && echo ' --apply' || echo ' (report only)')"
+    if [ -z "$extras" ]; then ok "nothing stale"; return 0; fi
+    printf '%s\n' "$extras" | while IFS= read -r p; do
+        printf '%s\t%s\n' "$(printf '%s\n' "$p" | mirror_group)" "$(stat -c %s "$MIRROR/$p")"
+    done | awk -F'\t' '{ n[$1]++; s[$1] += $2 } END { for (g in n) printf "  %-70s %d files, %.2f GB\n", g, n[g], s[g] / 1e9 }'
+    ours=$(LC_ALL=C comm -12 <(printf '%s\n' "$extras") <(LC_ALL=C sort "$MIRROR_STATE/manifest" 2>/dev/null) || true)
+    if [ "$apply" = 0 ]; then
+        ok "$(printf '%s\n' "$ours" | grep -c . || true) of these were written by a sync; 'lab mirror prune --apply' deletes those only"
+        return 0
+    fi
+    [ -z "$ours" ] || printf '%s\n' "$ours" | while IFS= read -r p; do rm -f -- "$MIRROR/$p"; done
+    LC_ALL=C comm -23 <(LC_ALL=C sort "$MIRROR_STATE/manifest") <(printf '%s\n' "$ours") > "$MIRROR_STATE/manifest.tmp"
+    mv "$MIRROR_STATE/manifest.tmp" "$MIRROR_STATE/manifest"
+    ok "deleted $(printf '%s\n' "$ours" | grep -c . || true); kept (not written by a sync):"
+    LC_ALL=C comm -23 <(printf '%s\n' "$extras") <(printf '%s\n' "$ours") | sed 's/^/    /'
+}
+
+cmd_mirror() {
+    mirror_require
+    local sub=${1:-status}; shift || true
+    case "$sub" in
+        status) cmd_mirror_status ;;
+        sync)   cmd_mirror_sync "$@" ;;
+        verify) cmd_mirror_verify "$@" ;;
+        prune)  cmd_mirror_prune "$@" ;;
+        *) echo "usage: lab mirror status|sync [--wifi] [--force] [repo...]|verify [repo...]|prune [--apply]" >&2; exit 1 ;;
+    esac
+}
+
 cmd_logs() {
     case "${1:-}" in
         llama-swap) sudo journalctl -u llama-swap -f ;;
@@ -898,7 +1315,8 @@ cmd_logs() {
             else
                 echo "$1 runs on the desktop, not here: ssh llm '$REPO/bin/lab logs $1'" >&2; exit 1
             fi ;;
-        *) echo "usage: lab logs <llama-swap|model|pool|litellm|prometheus|grafana>" >&2; exit 1 ;;
+        mirror)     tail -F "$MIRROR_STATE/sync.log" ;;
+        *) echo "usage: lab logs <llama-swap|model|pool|litellm|prometheus|grafana|mirror>" >&2; exit 1 ;;
     esac
 }
 
@@ -911,5 +1329,6 @@ case "${1:-}" in
     reload) shift; cmd_reload "$*" ;;
     check)  cmd_check ;;
     install) cmd_install ;;
+    mirror) shift; cmd_mirror "$@" ;;
     *) awk '/^#== usage ==/{f=1;next} /^#== end usage ==/{f=0} f' "$0" | sed 's/^# \?//'; exit 1 ;;
 esac

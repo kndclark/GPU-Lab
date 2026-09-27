@@ -27,7 +27,7 @@ models:
     # Phase 2 experiments this laptop exists to run.
     cmd: |
       docker run --name ${MODEL_ID} --init --rm --gpus all --ipc=host
-      -v /srv/model-cache:/hf -e HF_HOME=/hf
+      -v /srv/model-cache:/hf -e HF_HOME=/hf -e HF_HUB_OFFLINE=1
       -p 8102:8000
       vllm/vllm-openai:v0.29.0
       --model Qwen/Qwen3-Embedding-0.6B
