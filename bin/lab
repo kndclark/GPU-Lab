@@ -195,6 +195,27 @@ peer_addr() { case "$NODE" in desktop) echo 10.10.0.2 ;; laptop) echo 10.10.0.1 
 on_desktop() { ssh -o ConnectTimeout=5 llm "$@"; }
 desktop_gpu_used_mib() { on_desktop 'nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits' 2>/dev/null | head -1; }
 
+# The fix for a dead direct link, as one line. A pulled cable, or the other
+# node powered off, reads carrier 0, and no repair helps; every site used to
+# suggest the repair anyway. The I226 wedge after suspend is the case the
+# repair exists for, and it makes the carrier file unreadable ("Invalid
+# argument"; host/laptop-igc-resume-repair.sh).
+link_down_hint() {
+    local nic c
+    [ "$NODE" = laptop ] && nic=$LAPTOP_NIC || nic=$DESKTOP_NIC
+    if ! c=$(cat "/sys/class/net/$nic/carrier" 2>/dev/null); then
+        if [ "$NODE" = laptop ]; then
+            echo "sudo /usr/local/sbin/gpu-lab-igc-resume-repair"
+        else
+            echo "$nic has no readable carrier; the wedge repair is laptop-side"
+        fi
+    elif [ "$c" = 0 ]; then
+        echo "no carrier on $nic: the cable is out or the other node is off"
+    else
+        echo "carrier up on $nic but $(peer_addr) does not answer: check 'ip -br addr' on both"
+    fi
+}
+
 # True when this node's /srv/model-cache is the local mirror's bind mount
 # (host/laptop-fstab-model-cache.line), not NFS from the desktop.
 cache_is_mirror() {
@@ -217,12 +238,12 @@ cmd_up() {
         if cache_is_mirror; then
             echo "  starting anyway: weights come from the local mirror." >&2
             echo "  last sync: $(cat "$MIRROR_STATE/last-sync" 2>/dev/null || echo never)" >&2
-            echo "  but nothing can reach this node until the link is repaired:" >&2
-            echo "    sudo /usr/local/sbin/gpu-lab-igc-resume-repair" >&2
+            echo "  but nothing can reach this node until the link is back:" >&2
+            echo "    $(link_down_hint)" >&2
         else
             echo "  /srv/model-cache is NFS over that link and the unit requires it," >&2
-            echo "  so llama-swap cannot start. Repair, then retry:" >&2
-            echo "    sudo /usr/local/sbin/gpu-lab-igc-resume-repair" >&2
+            echo "  so llama-swap cannot start. Fix the link, then retry:" >&2
+            echo "    $(link_down_hint)" >&2
             exit 1
         fi
     fi
@@ -302,7 +323,7 @@ cmd_up() {
         ok "peer $(peer_addr)     : UNREACHABLE -- qwen3-embed falls back to this node (~90 s load)"
     else
         ok "peer $(peer_addr)     : UNREACHABLE -- this node is serving to nobody."
-        ok "                      sudo /usr/local/sbin/gpu-lab-igc-resume-repair"
+        ok "                      $(link_down_hint)"
     fi
 
     if [ "${1:-}" = "--warm" ]; then
@@ -460,7 +481,7 @@ pool_require_driver() {
     fi
     if ! ping -c1 -W2 "$DESKTOP_ADDR" >/dev/null 2>&1; then
         echo "  direct link to $DESKTOP_ADDR is DOWN, and the pool runs NCCL over it." >&2
-        echo "    sudo /usr/local/sbin/gpu-lab-igc-resume-repair" >&2
+        echo "    $(link_down_hint)" >&2
         exit 1
     fi
     if ! on_desktop true >/dev/null 2>&1; then
@@ -513,8 +534,13 @@ pool_fits() {
         echo "  $who: --gpu-memory-utilization $POOL_GPU_UTIL wants $want MiB, but vLLM will" >&2
         echo "      only find $free MiB free (of $total MiB on the card). It would OOM" >&2
         echo "      partway through startup." >&2
-        echo "      lower it for this run:" >&2
-        echo "        POOL_GPU_UTIL=0.88 $REPO/bin/lab pool up" >&2
+        # The highest setting that fits right now, floored to 0.01; not a
+        # fixed 0.88, which was no help to a run already at or below it.
+        local fits
+        fits=$(awk -v f="$free" -v t="$total" -v g="$POOL_VLLM_TOTAL_GAP_MIB" \
+                 'BEGIN{u = int(f / (t - g) * 100) / 100; printf "%.2f", (u > 0 ? u : 0)}')
+        echo "      close what is using the card, or lower it for this run:" >&2
+        echo "        POOL_GPU_UTIL=$fits $REPO/bin/lab pool up" >&2
         return 1
     fi
     ok "$who: wants $want MiB, vLLM will find $free MiB free"
@@ -826,7 +852,7 @@ cmd_status() {
     # an otherwise healthy server -- see host/laptop-igc-resume-repair.sh.
     dev=$(ip -o route show 10.10.0.0/30 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)
     if [ -z "$dev" ]; then
-        ok "DOWN -- no 10.10.0.0/30 route (laptop: sudo /usr/local/sbin/gpu-lab-igc-resume-repair)"
+        ok "DOWN -- no 10.10.0.0/30 route ($(link_down_hint))"
     else
         me=$(ip -4 -o addr show "$dev" 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
         case "$me" in 10.10.0.1) peer=10.10.0.2 ;; 10.10.0.2) peer=10.10.0.1 ;; *) peer= ;; esac
