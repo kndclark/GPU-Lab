@@ -1520,7 +1520,7 @@ def main():
 
     print(json.dumps(summary, indent=1))
     versions = {b: (run_doc([b, "--version"]) or "").strip().splitlines()[:1] for b in sorted(bins)}
-    out = a.out or os.path.join(HERE, f"research-eval-{a.label}.json")
+    out = a.out or os.path.join(HERE, "results", f"research-eval-{a.label}.json")
     json.dump({"label": a.label, "set": a.set, "promql_catalog": a.promql_catalog, "model": a.model, "base": a.base, "tools": a.tools,
                "thinking": a.thinking, "max_tokens": a.max_tokens, "max_calls": a.max_calls,
                "temperature": a.temperature, "top_p": a.top_p, "sample_seed": a.sample_seed, "window": a.window, "seed": a.seed, "limit": a.limit,

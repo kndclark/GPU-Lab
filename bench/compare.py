@@ -2,7 +2,7 @@
 """Compare saved research_eval runs, with the uncertainty the headline
 percentages leave out.
 
-  compare.py --table research-eval-*.json    every run, headline metrics,
+  compare.py --table results/research-eval-*.json  every run, headline metrics,
                                              Wilson 95% intervals
   compare.py A.json B.json                   A vs B, paired item by item:
                                              exact McNemar p, bootstrap 95%
