@@ -3,7 +3,8 @@
 # was run by hand: one full `lab pool up` per --max-num-batched-tokens value (B), one
 # throwaway request (the first after pool up is slow), then bench/prefill_curve.py.
 # The KV lines come from the head's serve log. Each B ends with `lab pool down`, which
-# restores what pool up stopped. Run from the laptop; bin/lab is the deployed copy.
+# does not restart llama-swap: run `lab up` on each node that had it. Run from the laptop;
+# bin/lab is the deployed copy.
 # usage: bench/prefill_sweep.sh OUTDIR B [B...]
 set -u
 out=$1; shift

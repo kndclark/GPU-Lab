@@ -1,0 +1,85 @@
+{
+  "label": "pool Qwen3-14B, --max-num-batched-tokens 1024",
+  "model": "Qwen/Qwen3-14B",
+  "series": [
+    {
+      "numbers": 20,
+      "prompt_tokens": 143,
+      "ttft_s": 0.0846,
+      "ttft_min_s": 0.0431,
+      "ttft_max_s": 0.0847,
+      "samples": 3,
+      "prefill_tok_s_cumulative": 1690.2
+    },
+    {
+      "numbers": 70,
+      "prompt_tokens": 443,
+      "ttft_s": 0.2013,
+      "ttft_min_s": 0.2006,
+      "ttft_max_s": 0.2015,
+      "samples": 3,
+      "prefill_tok_s_cumulative": 2200.7,
+      "marginal_tok_s": 2570.7
+    },
+    {
+      "numbers": 160,
+      "prompt_tokens": 983,
+      "ttft_s": 0.4172,
+      "ttft_min_s": 0.4164,
+      "ttft_max_s": 0.4174,
+      "samples": 3,
+      "prefill_tok_s_cumulative": 2356.3,
+      "marginal_tok_s": 2501.2
+    },
+    {
+      "numbers": 325,
+      "prompt_tokens": 1973,
+      "ttft_s": 0.6641,
+      "ttft_min_s": 0.6637,
+      "ttft_max_s": 0.6643,
+      "samples": 3,
+      "prefill_tok_s_cumulative": 2971.0,
+      "marginal_tok_s": 4009.7
+    },
+    {
+      "numbers": 480,
+      "prompt_tokens": 2903,
+      "ttft_s": 0.8955,
+      "ttft_min_s": 0.8947,
+      "ttft_max_s": 0.8959,
+      "samples": 3,
+      "prefill_tok_s_cumulative": 3241.9,
+      "marginal_tok_s": 4019.0
+    },
+    {
+      "numbers": 650,
+      "prompt_tokens": 3923,
+      "ttft_s": 1.1655,
+      "ttft_min_s": 1.165,
+      "ttft_max_s": 1.168,
+      "samples": 3,
+      "prefill_tok_s_cumulative": 3365.9,
+      "marginal_tok_s": 3777.8
+    },
+    {
+      "numbers": 850,
+      "prompt_tokens": 5123,
+      "ttft_s": 1.5181,
+      "ttft_min_s": 1.5172,
+      "ttft_max_s": 1.5187,
+      "samples": 3,
+      "prefill_tok_s_cumulative": 3374.5,
+      "marginal_tok_s": 3403.3
+    },
+    {
+      "numbers": 975,
+      "prompt_tokens": 5873,
+      "ttft_s": 1.6767,
+      "ttft_min_s": 1.6755,
+      "ttft_max_s": 1.6767,
+      "samples": 3,
+      "prefill_tok_s_cumulative": 3502.8,
+      "marginal_tok_s": 4728.9
+    }
+  ]
+}

@@ -1,15 +1,257 @@
 {
-  "label": "POOL Qwen3-14B, --max-num-batched-tokens sweep (the 14B check bin/lab asks for before trusting 512)",
-  "recorded": "2026-10-02",
-  "status": "PRE-REGISTERED, not yet run",
-  "why": "bin/lab defaults POOL_MAX_BATCHED_TOKENS to 512 from the 70B sweep (bench/baseline-pool-llama31-70b-prefill-batch.json: TTFT at 3,950 tokens 4.74 / 5.16 / 6.08 / 7.81 s and KV 4.38x / 4.12x / 3.86x / 3.09x for 512 / 1024 / 2048 / 4096). Its comment says: 'Untested on the 14B: with 5x fewer parameters per chunk, the fixed cost of each step (the hop across the link, scheduling, eager kernel launches) is a bigger share, so its best width may be larger. Run bench/prefill_curve.py before trusting 512 there.' Qwen3-14B is bin/lab's default pool model.",
-  "method": {
-    "design": "Four full pool restarts with bin/lab's defaults (Qwen/Qwen3-14B, max-model-len 8192, gpu-memory-utilization 0.92) except POOL_MAX_BATCHED_TOKENS = 4096, 1024, 2048, 512, in that order. bench/prefill_sweep.sh runs each: lab pool up, the head's KV lines from /tmp/vllm-pool.log, one throwaway request, bench/prefill_curve.py (default counts, 3 samples, unique random prompts so the prefix cache cannot serve one), lab pool down.",
-    "not_measured": "Decode throughput (the 70B showed it indifferent to B at c=5, 16 and 128); long prompts under concurrency."
+ "label": "POOL Qwen3-14B, --max-num-batched-tokens sweep (the 14B check bin/lab asks for before trusting 512)",
+ "recorded": "2026-10-02",
+ "status": "MEASURED 2026-10-02 00:13-00:26 (4 restarts, all exit 0); predictions above were committed (4fe2c8b) before the first restart",
+ "why": "bin/lab defaults POOL_MAX_BATCHED_TOKENS to 512 from the 70B sweep (bench/baseline-pool-llama31-70b-prefill-batch.json: TTFT at 3,950 tokens 4.74 / 5.16 / 6.08 / 7.81 s and KV 4.38x / 4.12x / 3.86x / 3.09x for 512 / 1024 / 2048 / 4096). Its comment says: 'Untested on the 14B: with 5x fewer parameters per chunk, the fixed cost of each step (the hop across the link, scheduling, eager kernel launches) is a bigger share, so its best width may be larger. Run bench/prefill_curve.py before trusting 512 there.' Qwen3-14B is bin/lab's default pool model.",
+ "method": {
+  "design": "Four full pool restarts with bin/lab's defaults (Qwen/Qwen3-14B, max-model-len 8192, gpu-memory-utilization 0.92) except POOL_MAX_BATCHED_TOKENS = 4096, 1024, 2048, 512, in that order. bench/prefill_sweep.sh runs each: lab pool up, the head's KV lines from /tmp/vllm-pool.log, one throwaway request, bench/prefill_curve.py (default counts, 3 samples, unique random prompts so the prefix cache cannot serve one), lab pool down.",
+  "not_measured": "Decode throughput (the 70B showed it indifferent to B at c=5, 16 and 128); long prompts under concurrency."
+ },
+ "preregistered_predictions": {
+  "kv": "INFERENCE: KV falls monotonically as B rises, as on the 70B (the prefill activation buffers come out of the same budget); 512 has the most.",
+  "ttft_at_3950": "INFERENCE: 4096 is the slowest (one chunk for the whole prompt, no pipeline overlap). The curve is flatter than the 70B's, whose 512 -> 4096 spread is +65%; 512 is the fastest or within 10% of the fastest.",
+  "decision_rule": "512 stays the 14B default unless another B is faster at the longest prompt by more than the larger of the two 3-sample ranges AND keeps at least 95% of 512's KV tokens. A different winner is a proposal for bin/lab (per-model default), not a change made here."
+ },
+ "verdict": "512 stays the 14B default. It is the fastest width at every prompt length from 983 tokens up (at 3,923 tokens: 1.032 s vs 1.166 / 1.348 / 1.666 s for 1024 / 2048 / 4096; 3-sample ranges <= 0.003 s) and has the most KV. bin/lab's guess that the 14B's best width 'may be larger' is refuted. Unlike the 70B, the KV cost of a wider batch is small here (1.5% from 512 to 4096, vs 29%).",
+ "kv_cost_of_the_prefill_batch": {
+  "note": "From the head's /tmp/vllm-pool.log ('Available KV cache memory' per stage; 'GPU KV cache size' is the engine's budget, set by the smaller stage).",
+  "rows": [
+   {
+    "max_num_batched_tokens": 512,
+    "stage_kv_gib": [
+     4.64,
+     7.08
+    ],
+    "binding_gib": 4.64,
+    "engine_kv_tokens": 60832,
+    "engine_max_concurrency_at_8192": 7.43
+   },
+   {
+    "max_num_batched_tokens": 1024,
+    "stage_kv_gib": [
+     4.63,
+     7.01
+    ],
+    "binding_gib": 4.63,
+    "engine_kv_tokens": 60704,
+    "engine_max_concurrency_at_8192": 7.41
+   },
+   {
+    "max_num_batched_tokens": 2048,
+    "stage_kv_gib": [
+     4.61,
+     6.86
+    ],
+    "binding_gib": 4.61,
+    "engine_kv_tokens": 60448,
+    "engine_max_concurrency_at_8192": 7.38
+   },
+   {
+    "max_num_batched_tokens": 4096,
+    "stage_kv_gib": [
+     4.57,
+     6.6
+    ],
+    "binding_gib": 4.57,
+    "engine_kv_tokens": 59936,
+    "engine_max_concurrency_at_8192": 7.32
+   }
+  ]
+ },
+ "ttft_s_by_prompt_tokens": {
+  "units": "[median, min, max] of 3 samples, seconds",
+  "by_batch_size": {
+   "512": {
+    "143": [
+     0.0845,
+     0.0428,
+     0.0846
+    ],
+    "443": [
+     0.2011,
+     0.2007,
+     0.2012
+    ],
+    "983": [
+     0.3288,
+     0.3287,
+     0.329
+    ],
+    "1973": [
+     0.5602,
+     0.5597,
+     0.5604
+    ],
+    "2903": [
+     0.7785,
+     0.7774,
+     0.7788
+    ],
+    "3923": [
+     1.0315,
+     1.031,
+     1.0325
+    ],
+    "5123": [
+     1.3621,
+     1.3594,
+     1.3625
+    ],
+    "5873": [
+     1.5279,
+     1.5271,
+     1.5298
+    ]
+   },
+   "1024": {
+    "143": [
+     0.0846,
+     0.0431,
+     0.0847
+    ],
+    "443": [
+     0.2013,
+     0.2006,
+     0.2015
+    ],
+    "983": [
+     0.4172,
+     0.4164,
+     0.4174
+    ],
+    "1973": [
+     0.6641,
+     0.6637,
+     0.6643
+    ],
+    "2903": [
+     0.8955,
+     0.8947,
+     0.8959
+    ],
+    "3923": [
+     1.1655,
+     1.165,
+     1.168
+    ],
+    "5123": [
+     1.5181,
+     1.5172,
+     1.5187
+    ],
+    "5873": [
+     1.6767,
+     1.6755,
+     1.6767
+    ]
+   },
+   "2048": {
+    "143": [
+     0.0848,
+     0.0427,
+     0.0849
+    ],
+    "443": [
+     0.2004,
+     0.2002,
+     0.2008
+    ],
+    "983": [
+     0.4163,
+     0.416,
+     0.417
+    ],
+    "1973": [
+     0.8262,
+     0.8259,
+     0.8265
+    ],
+    "2903": [
+     1.0256,
+     1.0244,
+     1.0271
+    ],
+    "3923": [
+     1.3482,
+     1.3473,
+     1.3482
+    ],
+    "5123": [
+     1.646,
+     1.6457,
+     1.6492
+    ],
+    "5873": [
+     1.8773,
+     1.8761,
+     1.8787
+    ]
+   },
+   "4096": {
+    "143": [
+     0.0843,
+     0.0494,
+     0.0848
+    ],
+    "443": [
+     0.2012,
+     0.2,
+     0.2012
+    ],
+    "983": [
+     0.417,
+     0.4169,
+     0.417
+    ],
+    "1973": [
+     0.8247,
+     0.8241,
+     0.8257
+    ],
+    "2903": [
+     1.2203,
+     1.2193,
+     1.2218
+    ],
+    "3923": [
+     1.6656,
+     1.6651,
+     1.6657
+    ],
+    "5123": [
+     1.9537,
+     1.9453,
+     1.9613
+    ],
+    "5873": [
+     2.1357,
+     2.1337,
+     2.1369
+    ]
+   }
   },
-  "preregistered_predictions": {
-    "kv": "INFERENCE: KV falls monotonically as B rises, as on the 70B (the prefill activation buffers come out of the same budget); 512 has the most.",
-    "ttft_at_3950": "INFERENCE: 4096 is the slowest (one chunk for the whole prompt, no pipeline overlap). The curve is flatter than the 70B's, whose 512 -> 4096 spread is +65%; 512 is the fastest or within 10% of the fastest.",
-    "decision_rule": "512 stays the 14B default unless another B is faster at the longest prompt by more than the larger of the two 3-sample ranges AND keeps at least 95% of 512's KV tokens. A different winner is a proposal for bin/lab (per-model default), not a change made here."
-  }
+  "headline_at_3923_tokens": {
+   "512": 1.0315,
+   "1024": 1.1655,
+   "2048": 1.3482,
+   "4096": 1.6656,
+   "4096_vs_512": "+61.5% (70B: +65%)"
+  },
+  "files": [
+   "bench/results/pool-14b-prefill/prefill-512.json",
+   "bench/results/pool-14b-prefill/prefill-1024.json",
+   "bench/results/pool-14b-prefill/prefill-2048.json",
+   "bench/results/pool-14b-prefill/prefill-4096.json"
+  ]
+ },
+ "outcome_vs_predictions": {
+  "kv": "CONFIRMED monotone (60,832 -> 59,936 tokens), but small: 1.5% across the sweep, not the 70B's 29%.",
+  "ttft_at_3950": "PARTLY WRONG. 4096 slowest and 512 fastest: confirmed. 'Flatter than the 70B's': wrong, +61.5% vs +65%; the 14B's curve has the 70B's shape.",
+  "decision_rule": "No width beats 512, so 512 stays; nothing to propose for bin/lab beyond updating its 'untested on the 14B' comment."
+ },
+ "provenance": {
+  "driver": "595.91.07",
+  "measured_from": "laptop (lab-laptop), bench/prefill_sweep.sh with the deployed bin/lab at fb87b44",
+  "final_state": "pool down after each width. 'lab pool down' does NOT restart llama-swap (it prints 'lab up' for that); before the sweep the desktop's llama-swap was active and the laptop's inactive, so the desktop's needs 'lab up' afterwards (done after G7b, which used the desktop card next)."
+ }
 }

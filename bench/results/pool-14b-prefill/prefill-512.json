@@ -1,0 +1,85 @@
+{
+  "label": "pool Qwen3-14B, --max-num-batched-tokens 512",
+  "model": "Qwen/Qwen3-14B",
+  "series": [
+    {
+      "numbers": 20,
+      "prompt_tokens": 143,
+      "ttft_s": 0.0845,
+      "ttft_min_s": 0.0428,
+      "ttft_max_s": 0.0846,
+      "samples": 3,
+      "prefill_tok_s_cumulative": 1692.7
+    },
+    {
+      "numbers": 70,
+      "prompt_tokens": 443,
+      "ttft_s": 0.2011,
+      "ttft_min_s": 0.2007,
+      "ttft_max_s": 0.2012,
+      "samples": 3,
+      "prefill_tok_s_cumulative": 2202.7,
+      "marginal_tok_s": 2572.9
+    },
+    {
+      "numbers": 160,
+      "prompt_tokens": 983,
+      "ttft_s": 0.3288,
+      "ttft_min_s": 0.3287,
+      "ttft_max_s": 0.329,
+      "samples": 3,
+      "prefill_tok_s_cumulative": 2989.9,
+      "marginal_tok_s": 4228.7
+    },
+    {
+      "numbers": 325,
+      "prompt_tokens": 1973,
+      "ttft_s": 0.5602,
+      "ttft_min_s": 0.5597,
+      "ttft_max_s": 0.5604,
+      "samples": 3,
+      "prefill_tok_s_cumulative": 3522.2,
+      "marginal_tok_s": 4278.3
+    },
+    {
+      "numbers": 480,
+      "prompt_tokens": 2903,
+      "ttft_s": 0.7785,
+      "ttft_min_s": 0.7774,
+      "ttft_max_s": 0.7788,
+      "samples": 3,
+      "prefill_tok_s_cumulative": 3728.8,
+      "marginal_tok_s": 4260.2
+    },
+    {
+      "numbers": 650,
+      "prompt_tokens": 3923,
+      "ttft_s": 1.0315,
+      "ttft_min_s": 1.031,
+      "ttft_max_s": 1.0325,
+      "samples": 3,
+      "prefill_tok_s_cumulative": 3803.2,
+      "marginal_tok_s": 4031.6
+    },
+    {
+      "numbers": 850,
+      "prompt_tokens": 5123,
+      "ttft_s": 1.3621,
+      "ttft_min_s": 1.3594,
+      "ttft_max_s": 1.3625,
+      "samples": 3,
+      "prefill_tok_s_cumulative": 3761.2,
+      "marginal_tok_s": 3629.8
+    },
+    {
+      "numbers": 975,
+      "prompt_tokens": 5873,
+      "ttft_s": 1.5279,
+      "ttft_min_s": 1.5271,
+      "ttft_max_s": 1.5298,
+      "samples": 3,
+      "prefill_tok_s_cumulative": 3843.9,
+      "marginal_tok_s": 4523.5
+    }
+  ]
+}
