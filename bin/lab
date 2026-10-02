@@ -87,10 +87,10 @@ POOL_GPU_UTIL=${POOL_GPU_UTIL:-0.92}
 # arg_utils.get_batch_defaults() branches on card size, and both cards are
 # under its 70 GiB cutoff, so vLLM resolves 2048 batched tokens / 256 seqs
 # -- set 2048 here to get that back. 256 is also the floor: vLLM refuses a
-# value below max_num_seqs. Untested on the 14B: with 5x fewer
-# parameters per chunk, the fixed cost of each step (the hop across the
-# link, scheduling, eager kernel launches) is a bigger share, so its best
-# width may be larger. Run bench/prefill_curve.py before trusting 512 there.
+# value below max_num_seqs. The 14B, measured 2026-10-02
+# (bench/baseline-pool-qwen3-14b-prefill-batch.json): 512 is fastest there
+# too, 1.03 / 1.17 / 1.35 / 1.67 s at 3,923 tokens for 512 / 1024 / 2048 /
+# 4096, and a wider batch costs little KV (1.5% from 512 to 4096).
 POOL_MAX_BATCHED_TOKENS=${POOL_MAX_BATCHED_TOKENS:-512}
 # DEBUG here is the only way to see the resolved scheduler config: vLLM logs
 # "Defaulting max_num_batched_tokens to N" at debug level, so it is missing
