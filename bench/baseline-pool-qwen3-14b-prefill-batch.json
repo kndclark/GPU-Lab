@@ -1,0 +1,15 @@
+{
+  "label": "POOL Qwen3-14B, --max-num-batched-tokens sweep (the 14B check bin/lab asks for before trusting 512)",
+  "recorded": "2026-10-02",
+  "status": "PRE-REGISTERED, not yet run",
+  "why": "bin/lab defaults POOL_MAX_BATCHED_TOKENS to 512 from the 70B sweep (bench/baseline-pool-llama31-70b-prefill-batch.json: TTFT at 3,950 tokens 4.74 / 5.16 / 6.08 / 7.81 s and KV 4.38x / 4.12x / 3.86x / 3.09x for 512 / 1024 / 2048 / 4096). Its comment says: 'Untested on the 14B: with 5x fewer parameters per chunk, the fixed cost of each step (the hop across the link, scheduling, eager kernel launches) is a bigger share, so its best width may be larger. Run bench/prefill_curve.py before trusting 512 there.' Qwen3-14B is bin/lab's default pool model.",
+  "method": {
+    "design": "Four full pool restarts with bin/lab's defaults (Qwen/Qwen3-14B, max-model-len 8192, gpu-memory-utilization 0.92) except POOL_MAX_BATCHED_TOKENS = 4096, 1024, 2048, 512, in that order. bench/prefill_sweep.sh runs each: lab pool up, the head's KV lines from /tmp/vllm-pool.log, one throwaway request, bench/prefill_curve.py (default counts, 3 samples, unique random prompts so the prefix cache cannot serve one), lab pool down.",
+    "not_measured": "Decode throughput (the 70B showed it indifferent to B at c=5, 16 and 128); long prompts under concurrency."
+  },
+  "preregistered_predictions": {
+    "kv": "INFERENCE: KV falls monotonically as B rises, as on the 70B (the prefill activation buffers come out of the same budget); 512 has the most.",
+    "ttft_at_3950": "INFERENCE: 4096 is the slowest (one chunk for the whole prompt, no pipeline overlap). The curve is flatter than the 70B's, whose 512 -> 4096 spread is +65%; 512 is the fastest or within 10% of the fastest.",
+    "decision_rule": "512 stays the 14B default unless another B is faster at the longest prompt by more than the larger of the two 3-sample ranges AND keeps at least 95% of 512's KV tokens. A different winner is a proposal for bin/lab (per-model default), not a change made here."
+  }
+}
