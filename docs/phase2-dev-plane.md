@@ -271,6 +271,45 @@ codebase does not break anything.
 - **Nothing is pushed.** The harness exists on both nodes -- on the desktop as
   untracked files copied over ssh, not via the deploy path -- and the desktop's
   `bin/lab` is still the version without the kernel-container sweep.
+- **A third node: the ROG Ally X** (idea raised 2026-09-24; nothing tested). Its
+  24 GB is the handheld's only RAM (ASUS spec: "12GB*2 LPDDR5 on board"), shared
+  by the CPU and an AMD RDNA 3 iGPU with 12 CUs. So the GPU gets less than 24
+  GB, at roughly 120 GB/s against the 855 and 887 GB/s measured on the cards
+  here. (That is 7500 MT/s times a 128-bit bus; the bus width is not verified.)
+  The pool is vLLM on CUDA and NCCL, and whether vLLM can put an AMD stage in
+  the same pipeline is unknown. llama.cpp's RPC backend is the likelier path, and it fits
+  the expert-offload item above. It spreads weights across local and remote
+  devices in proportion to their memory, and its README says never to expose
+  `rpc-server` on an open network. Roles that need no GPU: a host for the
+  CPU-only services (LiteLLM, Prometheus, Grafana) off the training node, if it
+  can stay docked and on, or a third node for the EDA farm project. Settle first:
+  how much memory the iGPU can actually get under Linux; the wiring (the direct
+  link is point-to-point, the Ally has USB4); and llama.cpp tok/s with one RPC
+  stage on the Ally, against the same model without it.
+  - **Measured 2026-09-25** (`ssh deck@192.168.0.108`; SteamOS 3.10, kernel
+    7.2.4-valve1, Ryzen Z1 Extreme): Linux sees 15.3 GiB of RAM, because 8 GiB
+    is reserved as VRAM (`mem_info_vram_total`; that a firmware setting sets
+    the split is not verified). GPU-mapped system RAM (GTT) is capped at 8 GiB
+    (`ttm.pages_limit=2097152`). Vulkan (RADV, Mesa 26.2) exposes 16.0 GiB in
+    two heaps, 5.33 + 10.67, budget 15.2 GiB. So the GPU tops out near 16 GiB,
+    and whatever GTT holds comes out of the OS's 15.3. Wi-Fi only; no ROCm,
+    docker or llama.cpp (podman and distrobox are there); sudo needs a
+    password. The 8 GiB carve-out is the UMA frame buffer, set from Armoury
+    Crate on Windows (ASUS documents 4 to 8 GB for the original Ally; the Ally
+    X's options are not verified; the Ally has a Windows boot entry). This
+    kernel has no amdgpu `uma/carveout` sysfs knob. Raising the carve-out only
+    moves memory from the OS to the GPU: SteamOS pins GTT at 8 GiB with
+    `ttm.pages_min=2097152` on its boot line. The route to more GPU memory is
+    a small carve-out plus a larger `ttm.pages_limit` (GiB x 262144), about
+    18 GiB if 20% is left to the OS (arithmetic, not tried; needs sudo on the
+    Ally).
+  - **Frame buffer set to 12 GB, 2026-09-25 (David, BIOS; options were Auto
+    and 1 to 16 GB). Measured after the reboot:** VRAM 12.00 GiB, GTT still
+    8.00 GiB, Linux RAM 11.36 GiB (7.36 available). Vulkan now exposes 20.0
+    GiB, 13.33 device-local + 6.67, budget 19.2 (was 16.0 / 15.2). The GTT
+    part still comes out of Linux's 11.36, so plan on ~18 GiB for a model.
+    16 GB was avoided: the same ceiling by arithmetic, half the OS memory,
+    and SteamOS's 8 GiB GTT floor would exceed the RAM left.
 
 ## Still unsettled
 
