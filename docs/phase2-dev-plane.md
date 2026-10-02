@@ -286,7 +286,7 @@ codebase does not break anything.
   how much memory the iGPU can actually get under Linux; the wiring (the direct
   link is point-to-point, the Ally has USB4); and llama.cpp tok/s with one RPC
   stage on the Ally, against the same model without it.
-  - **Measured 2026-09-25** (`ssh deck@192.168.0.108`; SteamOS 3.10, kernel
+  - **Measured 2026-09-25** (`ssh ally`; SteamOS 3.10, kernel
     7.2.4-valve1, Ryzen Z1 Extreme): Linux sees 15.3 GiB of RAM, because 8 GiB
     is reserved as VRAM (`mem_info_vram_total`; that a firmware setting sets
     the split is not verified). GPU-mapped system RAM (GTT) is capped at 8 GiB
