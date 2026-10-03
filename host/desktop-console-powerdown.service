@@ -1,0 +1,34 @@
+# Desktop only. Powers the monitor down after 60 s without console input.
+#
+# Why: the desktop runs headless (no display manager), so its monitor shows the
+# tty1 login prompt indefinitely. On an OLED panel a static image burns in.
+#
+# consoleblank=60 (GRUB_CMDLINE_LINUX_DEFAULT) already blanks the console after
+# 60 s, but blanking alone only paints the screen black: the DisplayPort
+# connector stays DPMS "On" (/sys/class/drm/card1-DP-1/dpms read "On" after an
+# hour idle, 2026-10-02). Asking for VESA powerdown with a powerdown interval of
+# 0 makes the kernel power the monitor down at the moment it blanks, instead of
+# blanking first and powering down a whole minute later. Any key wakes it.
+#
+# The blank settings are global to the Linux console, so writing them to tty1
+# once at boot covers every VT. --powersave is an ioctl on stdin, hence both
+# redirections; opening tty1 this way does not take it from the getty.
+#
+# Install:  sudo cp host/desktop-console-powerdown.service /etc/systemd/system/
+#           sudo systemctl daemon-reload
+#           sudo systemctl enable --now desktop-console-powerdown.service
+# Check:    after 60 s untouched, cat /sys/class/drm/card1-DP-1/dpms -> Off
+# Undo:     sudo systemctl disable --now desktop-console-powerdown.service, then
+#           sudo sh -c 'setterm --term linux --powersave off </dev/tty1 >/dev/tty1'
+
+[Unit]
+Description=Power the console monitor down after 60 s without input
+After=systemd-vconsole-setup.service getty@tty1.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'setterm --term linux --blank 1 --powersave powerdown --powerdown 0 </dev/tty1 >/dev/tty1'
+
+[Install]
+WantedBy=multi-user.target
