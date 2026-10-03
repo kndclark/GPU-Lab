@@ -102,7 +102,9 @@ POOL_LOG_LEVEL=${POOL_LOG_LEVEL:-}
 # as a failure, since the engine keeps loading in the background either way.
 POOL_WAIT_SECS=${POOL_WAIT_SECS:-300}
 # One-off serve flags, e.g. --enforce-eager when CUDA graph capture will not
-# fit in what is left after the weights.
+# fit in what is left after the weights (the 70B). Leave it out when they do:
+# Nemotron 3.5 Lightning pooled at 16 seqs decoded one request at 29.8 tok/s
+# eager and 198.6 with graphs, same answers (moe-qlora plan.md L2, 2026-10-02).
 POOL_EXTRA_FLAGS=${POOL_EXTRA_FLAGS:-}
 DESKTOP_ADDR=10.10.0.1; DESKTOP_NIC=enp5s0
 LAPTOP_ADDR=10.10.0.2;  LAPTOP_NIC=enp129s0
