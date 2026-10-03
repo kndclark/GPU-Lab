@@ -1,9 +1,10 @@
 # NVIDIA OpenShell, for a future chat harness
 
-Research notes, 2026-10-02. **Nothing is installed and nothing has been run.**
-Facts are SOURCED from the 0.1.x docs (docs.nvidia.com/openshell, read as raw
-markdown), the GitHub repo and its releases API, or MEASURED on the nodes where
-marked. How it would fit the lab is INFERENCE until the smoke test at the end runs.
+Research notes, 2026-10-02, plus one smoke test on the laptop the same day
+(**PASS**, see the end). Nothing stays installed. Facts are SOURCED from the 0.1.x
+docs (docs.nvidia.com/openshell, read as raw markdown), the GitHub repo and its
+releases API, or MEASURED on the nodes where marked. How it would fit the eval
+harness is still INFERENCE beyond what the smoke test shows.
 
 ## What it is
 
@@ -123,20 +124,96 @@ shows the 5090 and `nvidia.com/gpu=all`; the desktop's `nvidia-ctk` has no
   a sandbox, bash and promql calls run fenced, a real search endpoint can be
   allowed by policy for named binaries only, and allowed and denied operations
   are logged.
-- **UNKNOWN until tested**: whether a gateway on the laptop lets a sandbox reach
-  `10.10.0.1` (a private address on the direct link, not the gateway host); how
-  a profile declares a bearer-token credential for LiteLLM (the credential
-  schema was not read); whether Docker-driver GPU sandboxes work on sm_120.
+- Settled by the smoke test: a sandbox reaches `10.10.0.1` (a private address on
+  the direct link, not the gateway host) when a profile names it, and a profile
+  declares a bearer credential as below. Still UNKNOWN: Docker-driver GPU
+  sandboxes on sm_120 (not needed for the harness).
 
-## First steps (proposed, not done)
+## Next steps
 
-1. Install a pinned release, not `curl ... main/install.sh | sh` (that tracks
-   `main`): the v0.1.2 release assets, Docker driver, on the laptop.
-2. Import a LiteLLM profile, create a provider with the key, and from a sandbox
-   `curl` `/v1/models` through it. Pass = models listed, key absent from the
-   sandbox's environment.
-3. Only then move `research_eval.py`'s tool executor into a sandbox, and compare
-   one eval set against the host-run numbers before trusting it.
+1. Done: a pinned v0.1.2 gateway and CLI on the laptop, Docker driver.
+2. Done: LiteLLM as a provider; the smoke test below.
+3. Open: move `research_eval.py`'s tool executor into a sandbox, and compare one
+   eval set against the host-run numbers before trusting it. Run the gateway with
+   TLS or behind a user service before it is more than a test (see caveats).
+
+## Smoke test (MEASURED, laptop, 2026-10-02): PASS
+
+Installed from the v0.1.2 release assets, each checked against the release's
+sha256 file, into a scratch directory (not `curl ... main/install.sh | sh`,
+which tracks `main` and installs system packages):
+`openshell-x86_64-unknown-linux-musl.tar.gz` (CLI) and
+`openshell-gateway-x86_64-unknown-linux-gnu.tar.gz`. The Docker driver pulled
+`ghcr.io/nvidia/openshell/supervisor:0.1.2` and `sandbox:0.1.2` itself, pinned to
+the gateway's version.
+
+**Gotcha: a Docker sandbox needs a gateway that mints sandbox tokens.** With no
+auth configured, `sandbox create` fails with "docker sandboxes require
+launch-scoped gateway authentication" (`openshell-driver-docker/src/lib.rs`,
+`validate_sandbox_auth`). The fix, taken from the repo's own
+`tasks/scripts/gateway-docker.sh`, is a signing key from
+`openshell-gateway generate-certs --output-dir pki` and this config:
+
+```toml
+[openshell]
+version = 2
+[openshell.gateway]
+name = "lab-smoke"
+compute_driver = "docker"
+disable_tls = true                      # loopback only, for a test
+[openshell.gateway.auth]
+allow_unauthenticated_users = true      # likewise
+[openshell.gateway.gateway_jwt]
+signing_key_path = "pki/jwt/signing.pem"
+public_key_path = "pki/jwt/public.pem"
+kid_path = "pki/jwt/kid"
+gateway_id = "lab-smoke"
+```
+
+`openshell-gateway --config gateway.toml` (binds 127.0.0.1:17670 by default), then
+`openshell gateway add http://127.0.0.1:17670 --local --name lab-smoke`. The
+provider profile (`openshell profile lint -f` then `profile import -f`):
+
+```yaml
+id: gpulab-litellm
+display_name: GPU-Lab LiteLLM front door
+category: inference
+inference_capable: true
+credentials:
+  - name: api_key
+    env_vars: [LITELLM_API_KEY]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+discovery:
+  credentials: [api_key]
+endpoints:
+  - host: 10.10.0.1
+    port: 4000
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+binaries: [/usr/bin/curl, /usr/local/bin/curl]
+```
+
+`openshell provider create --name litellm --type gpulab-litellm --credential
+LITELLM_API_KEY` reads the key from the CLI's own environment (loaded from
+`/etc/gpu-lab/litellm.env` on the desktop, never printed). Then
+`openshell sandbox create --from docker.io/curlimages/curl:8.11.1 --provider
+litellm --no-keep --no-tty -- sh -c '...'` ran four checks; the sandbox started,
+ran and was deleted in 2 s:
+
+| Check inside the sandbox | Result |
+|---|---|
+| `$LITELLM_API_KEY` is the real key? | No: a 58-character placeholder; the real key is 39 characters, and the hashes differ |
+| `GET /v1/models` with `Authorization: Bearer $LITELLM_API_KEY` | `200`, models `qwen3-coder qwen3-embed-desktop qwen3-embed pool`: the supervisor swapped the real key in |
+| the same request without the header | `401` |
+| `https://example.com` (not in any policy) | no connection (`000`): default deny |
+
+Caveats: plaintext and unauthenticated CLI access on loopback are fine for a test
+and not for a standing service; the packaged install (`install.sh`) sets up a
+systemd user service instead. The gateway, its state, the pulled images and the
+binaries were removed after the test.
 
 ## Sources
 
