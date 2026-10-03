@@ -150,7 +150,8 @@ Phase 2's endpoint had to be configured in Phase 1's files.
     kernels/sm-differ the Phase 3 regression differ (Rust); `cargo test` runs in the push gate
     training/         the QLoRA pipeline (runs on the desktop, sm_86)
     host/             host configuration that is not reproducible from code alone
-    docs/             what each phase delivered, and the upstream candidate ledger
+    docs/             what each phase delivered, the upstream candidate ledger, and
+                      forward notes (openshell.md: agent sandboxing for a chat harness)
 
 ## Using it
 
