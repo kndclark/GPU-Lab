@@ -729,8 +729,22 @@ pool_up() {
     local url="http://$DESKTOP_ADDR:$POOL_PORT/v1/models" served=0
     # ~170 s is normal: the laptop's half loads from its mirror in seconds, and
     # the rest is Ray and engine start-up. The budget is deliberately well past it.
+    # A launch that dies (an unsupported draft model, a flag vLLM rejects) used
+    # to sit out the whole budget, 15 minutes at the probes' 900 s, so every
+    # ~10 s check that vllm serve is still running. pgrep answers 1 for "not
+    # there" (as does docker exec when ray-head is gone); ssh failing is 255
+    # and only means keep waiting.
+    local i=0 rc t0=$SECONDS
     for _ in $(seq 1 $(( POOL_WAIT_SECS / 2 ))); do
         curl -sf -m3 "$url" >/dev/null 2>&1 && { served=1; break; }
+        if [ $(( ++i % 5 )) = 0 ]; then
+            on_desktop "sudo docker exec ray-head pgrep -f '[v]llm serve'" >/dev/null 2>&1 && rc=0 || rc=$?
+            if [ "$rc" = 1 ]; then
+                echo "  vLLM exited after $(( SECONDS - t0 ))s without serving. The log ends:" >&2
+                on_desktop "sudo docker exec ray-head tail -3 /tmp/vllm-pool.log" 2>&1 | cut -c1-240 | sed 's/^/    /' >&2 || true
+                exit 1
+            fi
+        fi
         sleep 2
     done
     if [ "$served" = 0 ]; then
