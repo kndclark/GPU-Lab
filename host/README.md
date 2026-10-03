@@ -130,3 +130,18 @@ before trusting any driver flag:
     for c in /sys/class/drm/card*-*/; do
       echo "$(basename $c) $(cat $c/status) $(basename $(readlink -f $c/../device/driver))"
     done
+
+## Desktop monitor power-down (OLED burn-in)
+
+The desktop is headless, so its monitor shows the tty1 login prompt forever,
+and the panel is OLED. `consoleblank=60` on the kernel command line only paints
+the console black: the DisplayPort connector stayed DPMS `On` after an hour idle.
+
+| Repo file | Installed as |
+|---|---|
+| `desktop-console-powerdown.service` | `/etc/systemd/system/desktop-console-powerdown.service`, `systemctl enable --now` |
+
+It sets VESA powerdown with a powerdown interval of 0, so the kernel powers the
+monitor down at the moment it blanks. Measured 2026-10-02: after a wake,
+`/sys/class/drm/card1-DP-1/dpms` read `On`, then `Off` within 60 s of no
+input. Any key wakes it. The unit's header has install, check and undo.
