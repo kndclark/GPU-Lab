@@ -43,6 +43,21 @@ model_list:
       node: laptop
       arch: sm_120
 
+  # O70: the 70B on the laptop's card alone, loaded on demand (~2 min). At a
+  # measured 1.1 tok/s per stream a long answer outlives the global 600 s, so
+  # this route sets its own. Both keys: a streamed request reads
+  # stream_timeout and then the global request_timeout, never "timeout".
+  - model_name: llama-70b-onecard
+    litellm_params:
+      model: openai/llama-70b-onecard
+      api_base: http://lab-laptop:8080/v1
+      api_key: none
+      timeout: 1800
+      stream_timeout: 1800
+    model_info:
+      node: laptop
+      arch: sm_120
+
   # ---- pooled: one vLLM across both cards (lab pool up), served by ray-head ----
   # Answers only while the pool is up; the rest of the time this route errors,
   # which is honest -- the per-node models and the pool cannot be co-resident.

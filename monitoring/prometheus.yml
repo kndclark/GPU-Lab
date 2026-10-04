@@ -24,6 +24,9 @@ scrape_configs:
       # than a spreadsheet.
       - targets: ['lab-laptop:8102']
         labels: {model: qwen3-embed, node: laptop, arch: sm_120}
+      # O70: the 70B on the laptop's card alone; carries series only while loaded.
+      - targets: ['lab-laptop:8103']
+        labels: {model: llama-70b-onecard, node: laptop, arch: sm_120}
 
   # The pool (lab pool up): ray-head serves the whole model, so there is one
   # target for both cards. Its own job because no llama-swap proxies it, which

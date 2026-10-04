@@ -38,5 +38,21 @@ models:
     cmdStop: docker stop ${MODEL_ID}
     ttl: 1800
 
-# No swap group: this node serves one model today, and the whole point of putting
-# it here is that it does NOT contend with the coder on the other card.
+  # O70: the 70B on this card alone, for when the pool is down (moe-qlora
+  # docs/next-model-plan.md). Measured there: 1.1 tok/s per stream, the same
+  # answers as the pool, the seven-set eval 9.6x slower than pooled. A slow
+  # path that needs no second card, not a substitute for "lab pool up".
+  # o70-serve.sh checks RAM and free VRAM before it starts the container.
+  llama-70b-onecard:
+    proxy: http://127.0.0.1:8103
+    cmd: /home/david/gpu-lab/nodes/laptop/o70-serve.sh ${MODEL_ID}
+    cmdStop: docker stop ${MODEL_ID}
+    # Releasing ~26 GiB of pinned RAM is slower than an embedding model's exit.
+    unloadTimeout: 30
+    ttl: 1800
+
+# No groups, so llama-swap's default holds: one model at a time on this card,
+# which is the truth -- O70 takes 0.92 of it. Loading O70 unloads qwen3-embed,
+# and an embedding request unloads O70 again (~2 min to reload). While the
+# embedder is down, LiteLLM falls back to the desktop's only if this node
+# fails the request, which it does not; it waits for the swap instead.
