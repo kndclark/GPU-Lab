@@ -118,6 +118,26 @@ tests:
               summary: "900 MiB of non-display graphics clients on a serving GPU (laptop)"
               description: "Windows on the card shrink vLLM's KV on the next load. Run GPU tests from a terminal with the IDE and browser closed."
 
+  - name: an engine on one card does not make the other card's windows fire
+    interval: 1m
+    input_series:
+      - series: 'gpulab_gpu_foreign_graphics_memory_mib{node="laptop"}'
+        values: '900x12'
+      - series: 'gpulab_gpu_foreign_graphics_memory_mib{node="desktop"}'
+        values: '600x12'
+      - series: 'up{job="vllm",node="desktop",instance="d:8101"}'
+        values: '1x12'
+      - series: 'up{job="vllm-pool",instance="p:8200"}'
+        values: '0x12'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ForeignGpuClients
+        exp_alerts:
+          - exp_labels: {severity: warning, incident: kv-shrink, node: desktop}
+            exp_annotations:
+              summary: "600 MiB of non-display graphics clients on a serving GPU (desktop)"
+              description: "Windows on the card shrink vLLM's KV on the next load. Run GPU tests from a terminal with the IDE and browser closed."
+
   # ---- AdapterServedAsBase ----
   - name: identical adapter answers fire, differing ones do not
     interval: 1m
@@ -189,6 +209,24 @@ tests:
       - eval_time: 20m
         alertname: CanaryNotRunning
         exp_alerts:
+          - exp_labels: {severity: warning, incident: canary, node: desktop}
+            exp_annotations:
+              summary: "The canary has not written results for 30 minutes"
+              description: "systemctl status gpu-lab-canary.timer; lab install on the node."
+
+  - name: a stale laptop canary does not hide a missing desktop one
+    interval: 1m
+    input_series:
+      - series: 'gpulab_canary_last_run_timestamp_seconds{node="laptop"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: CanaryNotRunning
+        exp_alerts:
+          - exp_labels: {severity: warning, incident: canary, node: laptop}
+            exp_annotations:
+              summary: "The canary has not written results for 30 minutes"
+              description: "systemctl status gpu-lab-canary.timer; lab install on the node."
           - exp_labels: {severity: warning, incident: canary, node: desktop}
             exp_annotations:
               summary: "The canary has not written results for 30 minutes"

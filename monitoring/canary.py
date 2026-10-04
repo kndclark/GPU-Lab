@@ -126,6 +126,9 @@ def probe(target, labels, cfg, node, log):
             log(f"{target}: base completion FAILED ({type(e).__name__})")
             ok = 0
         out.append(f"gpulab_canary_probe_ok{lbl(**ident)} {ok}")
+    # One probe_ok per engine: a scrape keeps only the first of duplicate
+    # series, so one line per adapter would hide a later failure.
+    oks = []
     for adapter, parent in adapters:
         try:
             differs = 0
@@ -133,13 +136,15 @@ def probe(target, labels, cfg, node, log):
                 if ask(adapter, p) != ask(parent, p):
                     differs = 1
                     break
-            out.append(f"gpulab_canary_probe_ok{lbl(**ident)} 1")
+            oks.append(1)
             out.append(f"gpulab_canary_adapter_differs{lbl(**ident, adapter=adapter)} {differs}")
             log(f"{target}: adapter {adapter} vs {parent}: "
                 f"{'differs' if differs else 'IDENTICAL -- served as the base'}")
         except Exception as e:
-            log(f"{target}: adapter probe FAILED ({type(e).__name__})")
-            out.append(f"gpulab_canary_probe_ok{lbl(**ident)} 0")
+            log(f"{target}: adapter {adapter} probe FAILED ({type(e).__name__})")
+            oks.append(0)
+    if oks:
+        out.append(f"gpulab_canary_probe_ok{lbl(**ident)} {min(oks)}")
     return out
 
 

@@ -50,12 +50,15 @@ groups:
           description: "Below its normal capacity. Another GPU client probably grew during vLLM's load; close windows and reload the engine."
 
       # Incident 3b: the cause, while an engine is up. Display servers are not
-      # counted. Fires only while some vLLM engine is up, so a browser on an
-      # idle card is not an alert.
+      # counted. Fires only while an engine is up on the same card, or the
+      # pool (which spans both), so a browser on an idle card is not an alert.
       - alert: ForeignGpuClients
         expr: |
-          gpulab_gpu_foreign_graphics_memory_mib > 400
-          and on () (count(up{job=~"vllm|vllm-pool"} == 1) > 0)
+          (gpulab_gpu_foreign_graphics_memory_mib > 400
+             and on (node) (up{job="vllm"} == 1))
+          or
+          (gpulab_gpu_foreign_graphics_memory_mib > 400
+             and on () (count(up{job="vllm-pool"} == 1) > 0))
         for: 5m
         labels: {severity: warning, incident: kv-shrink}
         annotations:
@@ -83,11 +86,13 @@ groups:
           summary: "A test completion on {{ $labels.model }} ({{ $labels.node }}) fails or times out"
           description: "The engine is up but cannot generate."
 
-      # The probes above are only as good as the canary running.
+      # The probes above are only as good as the canary running. A plain `or`:
+      # `or on ()` would drop the desktop-missing series whenever another
+      # node's canary is stale. A missing laptop series is a sleeping laptop.
       - alert: CanaryNotRunning
         expr: |
           (time() - gpulab_canary_last_run_timestamp_seconds > 1800)
-          or on () (absent(gpulab_canary_last_run_timestamp_seconds{node="desktop"}) * 1)
+          or absent(gpulab_canary_last_run_timestamp_seconds{node="desktop"})
         for: 5m
         labels: {severity: warning, incident: canary}
         annotations:
