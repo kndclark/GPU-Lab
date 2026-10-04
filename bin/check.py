@@ -206,6 +206,46 @@ if (os.environ.get("GPU_LAB_NODE") or socket.gethostname()) in ("laptop", "david
             f"(only in fstab: {len(have - want)}, only in the record: {len(want - have)})"
         )
 
+# ---- 6b. alert rules: parsed, deployed, and every rule unit-tested ----
+alerts = load("monitoring/alerts.yml")
+alert_tests = load("monitoring/alerts.test.yml")
+if alerts:
+    names = {r["alert"] for g in alerts["groups"] for r in g["rules"] if "alert" in r}
+    tested = {
+        a.get("alertname")
+        for t in (alert_tests or {}).get("tests", [])
+        for a in t.get("alert_rule_test", [])
+        if a.get("exp_alerts")          # a test that never expects a firing proves nothing
+    }
+    for n in sorted(names - tested):
+        fails.append(f"alerts.yml: rule {n} has no unit test that expects it to fire")
+    if names <= tested:
+        oks.append(f"all {len(names)} alert rules have a firing unit test")
+    if "/etc/prometheus/alerts.yml" not in ((prom or {}).get("rule_files") or []):
+        fails.append("prometheus.yml: rule_files does not load /etc/prometheus/alerts.yml")
+    compose_src = open(os.path.join(REPO, "monitoring/docker-compose.yml")).read()
+    if "alerts.yml:/etc/prometheus/alerts.yml" not in compose_src:
+        fails.append("docker-compose.yml: alerts.yml is not mounted into the prometheus container")
+    from shutil import which
+    if which("promtool"):
+        for args in (["check", "rules", "alerts.yml"], ["test", "rules", "alerts.test.yml"]):
+            r = subprocess.run(["promtool", *args], cwd=os.path.join(REPO, "monitoring"),
+                               capture_output=True, text=True)
+            if r.returncode:
+                fails.append(f"promtool {' '.join(args)}: {(r.stdout + r.stderr).strip()[:300]}")
+            else:
+                oks.append(f"promtool {' '.join(args)} passes")
+    else:
+        warns.append("promtool not on PATH: alert rules were not run through it "
+                     "(desktop: docker exec prometheus promtool ...)")
+
+r = subprocess.run([sys.executable, os.path.join(REPO, "monitoring/test_canary.py")],
+                   capture_output=True, text=True)
+if r.returncode:
+    fails.append("monitoring/test_canary.py: " + (r.stdout + r.stderr).strip()[-300:])
+else:
+    oks.append("canary self-test passes (stub engine, nothing started)")
+
 # ---- 7. the Rust tools must still build and pass their own tests ----
 #
 # This section exists because the gate could not see Rust at all, and the hole

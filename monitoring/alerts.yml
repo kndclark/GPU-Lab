@@ -1,0 +1,95 @@
+# Alert rules for the four incidents this lab has actually had. Every series
+# used here exists in the live Prometheus (checked against its API), and every
+# rule has a unit test in alerts.test.yml:
+#
+#   promtool check rules alerts.yml && promtool test rules alerts.test.yml
+#
+# Nothing delivers these anywhere: there is no Alertmanager. Firing alerts are
+# visible at :9090/alerts and in "lab status".
+groups:
+  - name: gpu-lab
+    rules:
+      # Incident 1: pooled vLLM pipeline-parallel deadlock. The server answers
+      # /metrics and holds requests, but no token ever comes out. Embedding
+      # engines are excluded: they hold requests and generate no tokens by design.
+      # The canary's own request makes an idle, deadlocked pool trip this too.
+      - alert: VllmGenerationStalled
+        expr: |
+          sum by (job, model, node, instance) (vllm:num_requests_running{job=~"vllm|vllm-pool", model!~".*embed.*"}
+                                              + vllm:num_requests_waiting{job=~"vllm|vllm-pool", model!~".*embed.*"}) > 0
+          and
+          sum by (job, model, node, instance) (increase(vllm:generation_tokens_total{job=~"vllm|vllm-pool", model!~".*embed.*"}[3m])) == 0
+        for: 2m
+        labels: {severity: critical, incident: pp-deadlock}
+        annotations:
+          summary: "{{ $labels.model }} holds requests but generates no tokens"
+          description: "Pipeline stall. On the pool: py-spy both stages (docker exec --privileged), then lab pool down. Check the serve command still has --no-enable-flashinfer-autotune."
+
+      # Incident 2: I226-V NIC wedge after laptop suspend. Seen from the desktop,
+      # a wedged NIC and a sleeping laptop look the same (no carrier, no ping),
+      # so this cannot tell them apart; it only says the link has been dead long
+      # enough to matter. The laptop cannot report its own wedge, because
+      # Prometheus reaches it over this very link.
+      - alert: DirectLinkDown
+        expr: gpulab_direct_link_up == 0
+        for: 10m
+        labels: {severity: warning, incident: nic-wedge}
+        annotations:
+          summary: "Direct link down on the {{ $labels.node }} (nic {{ $labels.nic }})"
+          description: "Laptop asleep, or the I226 wedged. If it is awake: journalctl -u gpu-lab-igc-resume, or sudo /usr/local/sbin/gpu-lab-igc-resume-repair."
+
+      # Incident 3a: KV smaller than the engine normally gets. num_gpu_blocks is a
+      # label, not a value, so the canary parses it and publishes the floor
+      # (monitoring/canary.yml) beside it.
+      - alert: KvCapacityBelowFloor
+        expr: gpulab_canary_kv_blocks < on (node, model) gpulab_canary_kv_blocks_floor
+        for: 5m
+        labels: {severity: warning, incident: kv-shrink}
+        annotations:
+          summary: "{{ $labels.model }} on {{ $labels.node }} got only {{ $value }} KV blocks"
+          description: "Below its normal capacity. Another GPU client probably grew during vLLM's load; close windows and reload the engine."
+
+      # Incident 3b: the cause, while an engine is up. Display servers are not
+      # counted. Fires only while some vLLM engine is up, so a browser on an
+      # idle card is not an alert.
+      - alert: ForeignGpuClients
+        expr: |
+          gpulab_gpu_foreign_graphics_memory_mib > 400
+          and on () (count(up{job=~"vllm|vllm-pool"} == 1) > 0)
+        for: 5m
+        labels: {severity: warning, incident: kv-shrink}
+        annotations:
+          summary: "{{ $value }} MiB of non-display graphics clients on a serving GPU ({{ $labels.node }})"
+          description: "Windows on the card shrink vLLM's KV on the next load. Run GPU tests from a terminal with the IDE and browser closed."
+
+      # Incident 4: an adapter answering as the base model. It is still listed
+      # in /v1/models, so only a behavioural probe shows it.
+      - alert: AdapterServedAsBase
+        expr: gpulab_canary_adapter_differs == 0
+        for: 10m
+        labels: {severity: critical, incident: adapter-as-base}
+        annotations:
+          summary: "Adapter {{ $labels.adapter }} answers exactly like its base model"
+          description: "Weights not applied. Check the saved key names (model.language_model.layers.*) and that the adapter files are readable by the serving user."
+
+      # The canary's own completion hung or errored on an engine that answers
+      # /metrics: the deadlock seen from the client side, and the only signal
+      # for it when nothing else is sending traffic.
+      - alert: CanaryProbeFailing
+        expr: gpulab_canary_probe_ok == 0
+        for: 10m
+        labels: {severity: critical, incident: pp-deadlock}
+        annotations:
+          summary: "A test completion on {{ $labels.model }} ({{ $labels.node }}) fails or times out"
+          description: "The engine is up but cannot generate."
+
+      # The probes above are only as good as the canary running.
+      - alert: CanaryNotRunning
+        expr: |
+          (time() - gpulab_canary_last_run_timestamp_seconds > 1800)
+          or on () (absent(gpulab_canary_last_run_timestamp_seconds{node="desktop"}) * 1)
+        for: 5m
+        labels: {severity: warning, incident: canary}
+        annotations:
+          summary: "The canary has not written results for 30 minutes"
+          description: "systemctl status gpu-lab-canary.timer; lab install on the node."

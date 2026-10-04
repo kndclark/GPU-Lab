@@ -1,0 +1,14 @@
+[Unit]
+Description=GPU lab canary (KV capacity, adapter-vs-base, completion probe)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=david
+Group=david
+# Creates /var/lib/gpu-lab/textfile, which gpu_exporter.py serves.
+StateDirectory=gpu-lab/textfile
+StateDirectoryMode=0755
+# Never starts a model: it only talks to engines that already answer.
+ExecStart=/home/david/gpu-lab/bin/lab canary --write
+TimeoutStartSec=15min

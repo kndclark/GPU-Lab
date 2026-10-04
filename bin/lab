@@ -11,7 +11,9 @@
 #   lab reload  [svc]        apply edited config files (they are read-only mounts)
 #   lab check                validate configs before a push deploys them
 #   lab install              (re)write this node's systemd unit from the repo
-#   lab logs    <svc>        follow logs (llama-swap|litellm|prometheus|grafana|model|pool|mirror)
+#   lab canary  [--write]    probe the engines now: KV capacity, adapter vs base (starts no model)
+#   lab alerts               print the alert rules that are firing or pending
+#   lab logs    <svc>        follow logs (llama-swap|litellm|prometheus|grafana|model|pool|canary|mirror)
 #   lab mirror  status       laptop: is the local weight copy current (read-only)
 #               sync [--wifi] [--force] [repo...]   copy + hash-check from the desktop
 #               verify [repo...]  re-hash every blob;  prune [--apply]  report stale files
@@ -132,7 +134,7 @@ detect_node() {
 # Usage is answered before the node gate: on a third machine "lab" used to print
 # its own help, and a node-detection failure should not take that away.
 case "${1:-}" in
-    up|down|pool|status|reload|logs|check|install|mirror) ;;
+    up|down|pool|status|reload|logs|check|install|mirror|canary|alerts) ;;
     *) awk '/^#== usage ==/{f=1;next} /^#== end usage ==/{f=0} f' "$0" | sed 's/^# \?//'; exit 1 ;;
 esac
 
@@ -287,6 +289,10 @@ cmd_up() {
     sudo systemctl start gpu-exporter 2>/dev/null \
         && ok "$(sudo systemctl is-active gpu-exporter)" \
         || ok "not installed -- run: lab install"
+    # Cheap and GPU-free; it only talks to engines that already answer.
+    sudo systemctl start gpu-lab-canary.timer 2>/dev/null \
+        && ok "canary timer: $(sudo systemctl is-active gpu-lab-canary.timer)" \
+        || ok "canary timer not installed -- run: lab install"
 
     say "$((n++))/$total  llama-swap (model router)"
     if [ ! -f "$SWAP_CONFIG" ]; then
@@ -379,6 +385,13 @@ cmd_down() {
     if [ "$HAS_COMPOSE" = 1 ] && [ "$gpu_only" = 0 ]; then
         say "$((n++))/$total  LiteLLM (stop accepting new work first)"
         ( cd "$COMPOSE_DIR" && sudo docker compose stop litellm ) 2>&1 | tail -1
+    fi
+
+    # Monitoring, so --gpu-only keeps it (a training run is when it matters),
+    # like Prometheus. A full down stops it so nothing probes a stopping engine.
+    if [ "$gpu_only" = 0 ]; then
+        sudo systemctl stop gpu-lab-canary.timer 2>/dev/null || true
+        ok "canary timer: $(sudo systemctl is-active gpu-lab-canary.timer 2>/dev/null || true)"
     fi
 
     say "$((n++))/$total  llama-swap + any loaded model"
@@ -826,6 +839,7 @@ cmd_status() {
         sv="not installed"
     fi
     ok "llama-swap : ${sv:-unknown}"
+    ok "canary     : timer $(sudo systemctl is-active gpu-lab-canary.timer 2>/dev/null || true)"
     if [ -n "$pooled" ] && [ "$sv" != active ]; then
         ok "             not a fault -- the pool ($pooled) holds this card"
     fi
@@ -900,6 +914,9 @@ pooled     http://$DESKTOP_ADDR:$POOL_PORT/v1/models"
         if curl -sf "$addr" >/dev/null 2>&1; then ok "$name OK"; else ok "$name DOWN"; fi
     done <<< "$endpoints"
 
+    say "alerts"
+    cmd_alerts || ok "alerts query failed (exit $?)"
+
     # Last, because it is the slow part (an ssh dry run), and in an || so a
     # failure inside it cannot end status early under set -e.
     if [ "$NODE" = laptop ] && [ -d "$MIRROR" ]; then
@@ -954,13 +971,28 @@ cmd_install() {
         ok "installed and enabled"
     fi
 
+    # The canary is a oneshot service plus its timer, on both nodes.
+    local cu
+    for cu in gpu-lab-canary.service gpu-lab-canary.timer; do
+        if [ -f "$REPO/monitoring/$cu" ] && ! cmp -s "$REPO/monitoring/$cu" "/etc/systemd/system/$cu"; then
+            say "installing $cu"
+            sudo install -m 0644 "$REPO/monitoring/$cu" "/etc/systemd/system/$cu"
+            sudo systemctl daemon-reload
+            ok "installed"
+        fi
+    done
+    sudo systemctl enable gpu-lab-canary.timer >/dev/null 2>&1 || true
+    if [ "$HAS_COMPOSE" = 1 ]; then
+        ok "alert rules are a read-only mount: 'lab reload prometheus' to load edits"
+    fi
+
     # Both checks above ask "is the file the same", which is not the question
     # systemd asks. systemd watches mtime, so a unit rewritten byte-identically,
     # or one installed by an earlier run whose daemon-reload did not land, stays
     # flagged while cmp reports nothing to do -- and the flag survives until
     # something else happens to reload. Ask systemd instead of inferring.
     local stale="" u
-    for u in llama-swap gpu-exporter; do
+    for u in llama-swap gpu-exporter gpu-lab-canary.timer; do
         if [ "$(systemctl show -p NeedDaemonReload --value "$u" 2>/dev/null || true)" = yes ]; then
             stale="$stale $u"
         fi
@@ -1023,6 +1055,49 @@ cmd_reload() {
         ( cd "$COMPOSE_DIR" && sudo docker compose restart $compose_svcs ) 2>&1 | tail -3
     fi
     say "reloaded ($NODE)."
+}
+
+# ---- lab canary / lab alerts ----
+# The canary (monitoring/canary.py) is what turns "an adapter silently served
+# as the base" and "the KV cache shrank" into series Prometheus can alert on.
+# It never starts a model. Without --write it only prints, so trying it by hand
+# cannot publish a half-run's results; the timer passes --write.
+cmd_canary() {
+    local out=""
+    case "${1:-}" in
+        --write) out=/var/lib/gpu-lab/textfile/canary.prom ;;
+        "")      ;;
+        *) echo "usage: lab canary [--write]" >&2; exit 1 ;;
+    esac
+    python3 "$REPO/monitoring/canary.py" --node "$NODE" ${out:+--out "$out"}
+}
+
+# Prometheus runs on the desktop only; the laptop asks it over the link. There
+# is no Alertmanager, so this is where firing alerts become visible.
+alerts_json() {
+    local q='curl -sf --max-time 5 localhost:9090/api/v1/rules?type=alert'
+    if [ "$HAS_COMPOSE" = 1 ]; then $q; else on_desktop "$q"; fi
+}
+cmd_alerts() {
+    local j
+    if ! j=$(alerts_json 2>/dev/null) || [ -z "$j" ]; then
+        ok "alerts: Prometheus not reachable (the desktop, or the direct link, is down)"
+        return 0
+    fi
+    ALERTS_JSON=$j python3 - <<'PY'
+import json, os
+groups = json.loads(os.environ["ALERTS_JSON"])["data"]["groups"]
+rules = [r for g in groups for r in g["rules"]]
+if not rules:
+    print("  alerts: no rules loaded -- lab reload prometheus (on the desktop)")
+hot = [(r["name"], a) for r in rules for a in r.get("alerts", [])]
+if rules and not hot:
+    print(f"  alerts: none firing ({len(rules)} rules loaded)")
+for name, a in sorted(hot, key=lambda x: x[1]["state"]):
+    l = a["labels"]
+    who = " ".join(f"{k}={l[k]}" for k in ("node", "model", "adapter", "nic") if k in l)
+    print(f"  {a['state'].upper():8} {name} {who}: {a['annotations'].get('summary', '')}")
+PY
 }
 
 # ---- lab mirror: the laptop's local, verified copy of the desktop's weights ----
@@ -1402,7 +1477,8 @@ cmd_logs() {
                 echo "$1 runs on the desktop, not here: ssh llm '$REPO/bin/lab logs $1'" >&2; exit 1
             fi ;;
         mirror)     tail -F "$MIRROR_STATE/sync.log" ;;
-        *) echo "usage: lab logs <llama-swap|model|pool|litellm|prometheus|grafana|mirror>" >&2; exit 1 ;;
+        canary)     sudo journalctl -u gpu-lab-canary -f ;;
+        *) echo "usage: lab logs <llama-swap|model|pool|litellm|prometheus|grafana|canary|mirror>" >&2; exit 1 ;;
     esac
 }
 
@@ -1416,5 +1492,7 @@ case "${1:-}" in
     check)  cmd_check ;;
     install) cmd_install ;;
     mirror) shift; cmd_mirror "$@" ;;
+    canary) shift; cmd_canary "$@" ;;
+    alerts) cmd_alerts ;;
     *) awk '/^#== usage ==/{f=1;next} /^#== end usage ==/{f=0} f' "$0" | sed 's/^# \?//'; exit 1 ;;
 esac

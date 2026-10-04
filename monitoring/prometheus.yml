@@ -9,6 +9,11 @@ global:
   scrape_interval: 5s
   evaluation_interval: 15s
 
+# Alert rules. Nothing delivers them (no Alertmanager); they show at :9090/alerts
+# and in "lab status". Prometheus has no reload endpoint, so "lab reload prometheus".
+rule_files:
+  - /etc/prometheus/alerts.yml
+
 scrape_configs:
   - job_name: vllm
     static_configs:

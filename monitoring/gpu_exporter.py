@@ -98,10 +98,11 @@ def render(numbers, throttles, scrape_ok):
     lines.append("# TYPE gpulab_gpu_scrape_ok gauge")
     lines.append(f"gpulab_gpu_scrape_ok {scrape_ok}")
 
-    try:
-        lines.extend(system_metrics())
-    except Exception:
-        pass
+    for extra in (system_metrics, link_metrics, foreign_gpu_metrics, textfile_metrics):
+        try:
+            lines.extend(extra())
+        except Exception:
+            pass
 
     return "\n".join(lines) + "\n"
 
@@ -226,6 +227,97 @@ def system_metrics():
         lines.append("# TYPE gpulab_ac_online gauge")
         lines.append(f"gpulab_ac_online {online}")
 
+    return lines
+
+
+# ---- the alert rules' inputs (monitoring/alerts.yml) ----
+
+# Same names bin/lab uses for the two ends of the direct link.
+LINK_NICS = ("enp5s0", "enp129s0")
+TEXTFILE_DIR = "/var/lib/gpu-lab/textfile"
+# Display servers are unavoidable on the laptop (the panel is on the NVIDIA
+# card), so they are the baseline rather than a "foreign" client.
+DISPLAY_SERVERS = ("gnome-shell", "Xwayland", "Xorg")
+
+
+def link_metrics():
+    """Direct-link health, as seen from this node.
+
+    carrier_readable=0 with the NIC present is the I226 post-suspend wedge:
+    the netdev exists but its carrier file answers EINVAL. up=1 needs carrier
+    AND the peer answering a ping, because carrier alone survives a peer whose
+    address is gone. A node with neither NIC emits nothing.
+    """
+    nic = next((n for n in LINK_NICS if os.path.exists(f"/sys/class/net/{n}")), None)
+    if nic is None:
+        return []
+    carrier = read_int(f"/sys/class/net/{nic}/carrier")
+    up = 0
+    if carrier == 1:
+        out = subprocess.run(["ip", "-4", "-o", "addr", "show", nic],
+                             capture_output=True, text=True, timeout=5).stdout
+        peer = {"lab-desktop": "lab-laptop", "lab-laptop": "lab-desktop"}
+        target = next((peer[a] for a in peer if f" {a}/" in out), None)
+        if target:
+            up = 1 if subprocess.run(["ping", "-c1", "-W1", target],
+                                     capture_output=True, timeout=5).returncode == 0 else 0
+    return [
+        "# HELP gpulab_direct_link_up Direct link has carrier and the peer answers ping (1=yes)",
+        "# TYPE gpulab_direct_link_up gauge",
+        f'gpulab_direct_link_up{{nic="{nic}"}} {up}',
+        "# HELP gpulab_direct_link_carrier_readable NIC carrier file is readable (0 = wedged)",
+        "# TYPE gpulab_direct_link_carrier_readable gauge",
+        f'gpulab_direct_link_carrier_readable{{nic="{nic}"}} {0 if carrier is None else 1}',
+    ]
+
+
+_foreign_cache = (0.0, [])
+
+
+def foreign_gpu_metrics():
+    """Memory held by graphics clients other than the display server.
+
+    vLLM charges any app's growth during its load to its own KV budget (see
+    the vllm-kv-charges-other-gpu-clients note), so a browser window on a
+    serving card is a KV shrink waiting to happen. Cached 10 s: the XML dump
+    is far heavier than the other polls.
+    """
+    global _foreign_cache
+    now = time.time()
+    if now - _foreign_cache[0] < 10:
+        return _foreign_cache[1]
+    import xml.etree.ElementTree as ET
+    xml = subprocess.run(["nvidia-smi", "-q", "-x"], capture_output=True, text=True,
+                         timeout=10, check=True).stdout
+    total, count = 0, 0
+    for pi in ET.fromstring(xml).iter("process_info"):
+        if "G" not in (pi.findtext("type") or ""):
+            continue
+        name = os.path.basename(pi.findtext("process_name") or "")
+        if name in DISPLAY_SERVERS:
+            continue
+        mem = (pi.findtext("used_memory") or "").split()
+        if mem and mem[0].isdigit():
+            total += int(mem[0])
+            count += 1
+    lines = [
+        "# HELP gpulab_gpu_foreign_graphics_memory_mib Graphics clients other than the display server",
+        "# TYPE gpulab_gpu_foreign_graphics_memory_mib gauge",
+        f"gpulab_gpu_foreign_graphics_memory_mib {total}",
+        "# HELP gpulab_gpu_foreign_graphics_clients Count of those clients",
+        "# TYPE gpulab_gpu_foreign_graphics_clients gauge",
+        f"gpulab_gpu_foreign_graphics_clients {count}",
+    ]
+    _foreign_cache = (now, lines)
+    return lines
+
+
+def textfile_metrics():
+    """Serve *.prom files from TEXTFILE_DIR (the canary writes one there)."""
+    lines = []
+    for f in sorted(glob.glob(os.path.join(TEXTFILE_DIR, "*.prom"))):
+        with open(f) as fh:
+            lines.extend(ln.rstrip("\n") for ln in fh if ln.strip())
     return lines
 
 

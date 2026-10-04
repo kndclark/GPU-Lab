@@ -1,0 +1,195 @@
+# promtool test rules alerts.test.yml   (run beside alerts.yml)
+rule_files: [alerts.yml]
+evaluation_interval: 15s
+
+tests:
+  # ---- VllmGenerationStalled ----
+  - name: stalled pool fires
+    interval: 15s
+    input_series:
+      - series: 'vllm:num_requests_running{job="vllm-pool",model="pool",node="pooled",instance="p:8200",engine="0"}'
+        values: '2+0x40'
+      - series: 'vllm:num_requests_waiting{job="vllm-pool",model="pool",node="pooled",instance="p:8200",engine="0"}'
+        values: '3+0x40'
+      - series: 'vllm:generation_tokens_total{job="vllm-pool",model="pool",node="pooled",instance="p:8200",engine="0"}'
+        values: '500+0x40'
+    alert_rule_test:
+      - eval_time: 30s
+        alertname: VllmGenerationStalled
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: VllmGenerationStalled
+        exp_alerts:
+          - exp_labels: {severity: critical, incident: pp-deadlock, job: vllm-pool, model: pool, node: pooled, instance: "p:8200"}
+            exp_annotations:
+              summary: "pool holds requests but generates no tokens"
+              description: "Pipeline stall. On the pool: py-spy both stages (docker exec --privileged), then lab pool down. Check the serve command still has --no-enable-flashinfer-autotune."
+
+  - name: busy engine that is generating does not fire
+    interval: 15s
+    input_series:
+      - series: 'vllm:num_requests_running{job="vllm-pool",model="pool",node="pooled",instance="p:8200",engine="0"}'
+        values: '2+0x40'
+      - series: 'vllm:num_requests_waiting{job="vllm-pool",model="pool",node="pooled",instance="p:8200",engine="0"}'
+        values: '0+0x40'
+      - series: 'vllm:generation_tokens_total{job="vllm-pool",model="pool",node="pooled",instance="p:8200",engine="0"}'
+        values: '0+50x40'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: VllmGenerationStalled
+        exp_alerts: []
+
+  - name: idle engine and embedding engine do not fire
+    interval: 15s
+    input_series:
+      - series: 'vllm:num_requests_running{job="vllm-pool",model="pool",node="pooled",instance="p:8200",engine="0"}'
+        values: '0+0x40'
+      - series: 'vllm:generation_tokens_total{job="vllm-pool",model="pool",node="pooled",instance="p:8200",engine="0"}'
+        values: '500+0x40'
+      - series: 'vllm:num_requests_running{job="vllm",model="qwen3-embed",node="laptop",instance="l:8102",engine="0"}'
+        values: '4+0x40'
+      - series: 'vllm:generation_tokens_total{job="vllm",model="qwen3-embed",node="laptop",instance="l:8102",engine="0"}'
+        values: '0+0x40'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: VllmGenerationStalled
+        exp_alerts: []
+
+  # ---- DirectLinkDown ----
+  - name: link down for 10 minutes fires, a short blip does not
+    interval: 1m
+    input_series:
+      - series: 'gpulab_direct_link_up{node="desktop",nic="enp5s0"}'
+        values: '1 1 0x14'
+      - series: 'gpulab_direct_link_up{node="laptop",nic="enp129s0"}'
+        values: '1 0 0 1x14'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: DirectLinkDown
+        exp_alerts: []
+      - eval_time: 14m
+        alertname: DirectLinkDown
+        exp_alerts:
+          - exp_labels: {severity: warning, incident: nic-wedge, node: desktop, nic: enp5s0}
+            exp_annotations:
+              summary: "Direct link down on the desktop (nic enp5s0)"
+              description: "Laptop asleep, or the I226 wedged. If it is awake: journalctl -u gpu-lab-igc-resume, or sudo /usr/local/sbin/gpu-lab-igc-resume-repair."
+
+  # ---- KvCapacityBelowFloor ----
+  - name: kv below floor fires, at floor does not
+    interval: 1m
+    input_series:
+      - series: 'gpulab_canary_kv_blocks{node="pooled",model="pool"}'
+        values: '1122x12'
+      - series: 'gpulab_canary_kv_blocks_floor{node="pooled",model="pool"}'
+        values: '3000x12'
+      - series: 'gpulab_canary_kv_blocks{node="desktop",model="qwen3-coder"}'
+        values: '2252x12'
+      - series: 'gpulab_canary_kv_blocks_floor{node="desktop",model="qwen3-coder"}'
+        values: '1800x12'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: KvCapacityBelowFloor
+        exp_alerts:
+          - exp_labels: {severity: warning, incident: kv-shrink, node: pooled, model: pool}
+            exp_annotations:
+              summary: "pool on pooled got only 1122 KV blocks"
+              description: "Below its normal capacity. Another GPU client probably grew during vLLM's load; close windows and reload the engine."
+
+  # ---- ForeignGpuClients ----
+  - name: foreign clients fire only while an engine is up
+    interval: 1m
+    input_series:
+      - series: 'gpulab_gpu_foreign_graphics_memory_mib{node="laptop"}'
+        values: '900x12'
+      - series: 'gpulab_gpu_foreign_graphics_memory_mib{node="desktop"}'
+        values: '120x12'
+      - series: 'up{job="vllm-pool",instance="p:8200"}'
+        values: '0x5 1x7'
+    alert_rule_test:
+      - eval_time: 4m          # windows open but no engine up
+        alertname: ForeignGpuClients
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: ForeignGpuClients
+        exp_alerts:
+          - exp_labels: {severity: warning, incident: kv-shrink, node: laptop}
+            exp_annotations:
+              summary: "900 MiB of non-display graphics clients on a serving GPU (laptop)"
+              description: "Windows on the card shrink vLLM's KV on the next load. Run GPU tests from a terminal with the IDE and browser closed."
+
+  # ---- AdapterServedAsBase ----
+  - name: identical adapter answers fire, differing ones do not
+    interval: 1m
+    input_series:
+      - series: 'gpulab_canary_adapter_differs{node="pooled",model="pool",adapter="g6u"}'
+        values: '0x15'
+      - series: 'gpulab_canary_adapter_differs{node="pooled",model="pool",adapter="ok"}'
+        values: '1x15'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AdapterServedAsBase
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: AdapterServedAsBase
+        exp_alerts:
+          - exp_labels: {severity: critical, incident: adapter-as-base, node: pooled, model: pool, adapter: g6u}
+            exp_annotations:
+              summary: "Adapter g6u answers exactly like its base model"
+              description: "Weights not applied. Check the saved key names (model.language_model.layers.*) and that the adapter files are readable by the serving user."
+
+  # ---- CanaryProbeFailing ----
+  - name: failing completion probe fires
+    interval: 1m
+    input_series:
+      - series: 'gpulab_canary_probe_ok{node="pooled",model="pool"}'
+        values: '1 1 0x14'
+      - series: 'gpulab_canary_probe_ok{node="desktop",model="qwen3-coder"}'
+        values: '1x16'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: CanaryProbeFailing
+        exp_alerts: []
+      - eval_time: 14m
+        alertname: CanaryProbeFailing
+        exp_alerts:
+          - exp_labels: {severity: critical, incident: pp-deadlock, node: pooled, model: pool}
+            exp_annotations:
+              summary: "A test completion on pool (pooled) fails or times out"
+              description: "The engine is up but cannot generate."
+
+  # ---- CanaryNotRunning ----
+  - name: stale canary file fires, fresh one does not
+    interval: 1m
+    input_series:
+      # last run at t=0 and never refreshed: stale from t=30m
+      - series: 'gpulab_canary_last_run_timestamp_seconds{node="laptop"}'
+        values: '0x60'
+      # refreshed every minute
+      - series: 'gpulab_canary_last_run_timestamp_seconds{node="desktop"}'
+        values: '0+60x60'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: CanaryNotRunning
+        exp_alerts: []
+      - eval_time: 45m
+        alertname: CanaryNotRunning
+        exp_alerts:
+          - exp_labels: {severity: warning, incident: canary, node: laptop}
+            exp_annotations:
+              summary: "The canary has not written results for 30 minutes"
+              description: "systemctl status gpu-lab-canary.timer; lab install on the node."
+
+  - name: missing canary file on the desktop fires
+    interval: 1m
+    input_series:
+      - series: 'up{job="gpu",node="desktop"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: CanaryNotRunning
+        exp_alerts:
+          - exp_labels: {severity: warning, incident: canary, node: desktop}
+            exp_annotations:
+              summary: "The canary has not written results for 30 minutes"
+              description: "systemctl status gpu-lab-canary.timer; lab install on the node."

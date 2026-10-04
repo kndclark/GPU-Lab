@@ -1,0 +1,26 @@
+# Inputs for monitoring/canary.py. Data only: the logic is in the script.
+
+# Lowest num_gpu_blocks (16-token blocks) an engine normally gets. Below this
+# the KV cache has shrunk -- the usual cause is another GPU client growing
+# during vLLM's load, which vLLM charges to its own budget. Keys are
+# <model>@<node> as labelled in prometheus.yml; the pool, whose model
+# changes, is keyed pool@<the model's HF id> as /v1/models reports it.
+# Each floor sits ~20% under what that engine was measured to get.
+kv_floor_blocks:
+  "qwen3-coder@desktop": 1800      # 2252 observed
+  "qwen3-embed@desktop": 1350      # 1688 observed
+  "qwen3-embed@laptop": 2250       # 2803-2881 observed
+  "pool@Qwen/Qwen3-14B": 3000      # 3746-3804 observed at 0.92 utilisation
+
+# Greedy (temperature 0) prompts sent to an adapter and to its base model.
+# The adapter is "served as the base" when every answer is identical. Several
+# prompts, because one short answer can agree by chance.
+adapter_prompts:
+  - "In one sentence, what is a Prometheus alert rule?"
+  - "List three things to check when a GPU server stops answering."
+  - "Write a shell command that shows the five largest files in /var/log."
+max_tokens: 64
+request_timeout_s: 90
+
+# Embedding models have no chat route; probing one would read as a dead engine.
+no_generation_models: ["qwen3-embed"]
