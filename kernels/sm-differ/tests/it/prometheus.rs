@@ -7,7 +7,7 @@
 use sm_differ::measure::Refusal;
 use sm_differ::prom::parse_range_response;
 
-/// Verbatim from the lab, trimmed to two series.
+/// Verbatim from the lab, trimmed to two series, the link address replaced by its name.
 const REAL_OK: &str = r#"{"status":"success","data":{"resultType":"matrix","result":[
 {"metric":{"__name__":"up","arch":"sm_120","instance":"lab-laptop:8080","job":"llama-swap","node":"laptop"},
  "values":[[1789777366,"1"],[1789777486,"1"],[1789777606,"1"],[1789777726,"1"]]},

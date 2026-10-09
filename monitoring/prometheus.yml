@@ -19,7 +19,8 @@ scrape_configs:
       - targets: ['localhost:8102']
         labels: {model: qwen3-embed, node: desktop, arch: sm_86}
       # Phase 2: the laptop, reached over the direct link. Prometheus runs with
-      # network_mode: host, so 10.10.0.x is directly routable from here.
+      # network_mode: host, so it resolves lab-laptop from the host's /etc/hosts
+      # ('lab install' writes it; a running container sees it after 'lab reload').
       # The arch label is what makes an sm_86/sm_120 comparison a query rather
       # than a spreadsheet.
       - targets: ['lab-laptop:8102']

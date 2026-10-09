@@ -26,7 +26,12 @@ A private /30 with no gateway. Two rules matter:
   cable can win the routing contest and send internet traffic into a dead end.
 - **The desktop's netplan matches on MAC**, so the interface name cannot drift.
 
-Addresses: desktop `<desktop link address>/30` (`enp5s0`), laptop `<laptop link address>/30` (`enp129s0`).
+Addresses: any private /30. The desktop (`enp5s0`) holds its lower host address
+and the laptop (`enp129s0`) the upper one. This repo is public, so the records
+here carry labelled placeholders where a literal address is unavoidable and the
+names everywhere else: `lab install` reads the /30 off the link NIC and writes
+`lab-desktop` and `lab-laptop` into /etc/hosts. Run it on each node after
+(re)addressing the link.
 
 ## The laptop's NIC does not survive suspend
 
@@ -40,13 +45,13 @@ appears in `ip link show` but rejects every operation:
 
 **This reads as a desktop failure and is not one.** With the laptop's PHY
 powered down the desktop sees no carrier either, so systemd-networkd never
-applies `lab-desktop` — `ip -br addr` there shows `enp5s0 DOWN` with no address at
+applies the desktop's link address — `ip -br addr` there shows `enp5s0 DOWN` with no address at
 all. That missing address is a *symptom*, not lost configuration; networkd does
 not address a link with no carrier. Check `/etc/netplan/` before re-applying
 anything, and reach the desktop over `ssh llm-wifi` meanwhile.
 
 Rebinding the PCI driver re-probes the device; NetworkManager then reapplies
-`<laptop link address>/30` on its own. That is automated by `gpu-lab-igc-resume.service`,
+the laptop's link address on its own. That is automated by `gpu-lab-igc-resume.service`,
 installed from the two files here:
 
 | Repo file | Installed as |
@@ -81,7 +86,8 @@ only meaningful if both nodes loaded byte-identical weights.
 
 Two non-obvious choices in the export line:
 
-- **`<laptop link address>/32`** — exported to the laptop's direct-link address only. NFS
+- **`lab-laptop`** — exported to the laptop's direct-link address only (the
+  name resolves to that one address; a literal `/32` is equivalent). NFS
   listens on all interfaces, so this ACL is what keeps it off Wi-Fi.
 - **`all_squash,anonuid=1000,anongid=1000`** — every write lands as uid 1000
   regardless of what UID runs inside a container. Without it, a container running

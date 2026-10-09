@@ -116,15 +116,15 @@ shows the 5090 and `nvidia.com/gpu=all`; the desktop's `nvidia-ctk` has no
   sandbox on the laptop would also compete with vLLM's KV budget, since vLLM
   charges every other client's memory to itself.
 - **The front door becomes a provider.** A profile for LiteLLM at
-  `lab-desktop:4000` with its key as the credential would let an agent chat
+  the desktop's link address, port 4000, with its key as the credential would let an agent chat
   through the front door without the key ever entering the sandbox. The pool
-  endpoint (`lab-desktop:8200`) would be a second endpoint or profile.
+  endpoint (port 8200) would be a second endpoint or profile.
 - **It answers the eval harness's tool problem.** `bench/research_eval.py` runs
   model tool calls directly on the host and stubs `web_search` as unavailable. In
   a sandbox, bash and promql calls run fenced, a real search endpoint can be
   allowed by policy for named binaries only, and allowed and denied operations
   are logged.
-- Settled by the smoke test: a sandbox reaches `lab-desktop` (a private address on
+- Settled by the smoke test: a sandbox reaches the desktop's link address (a private address on
   the direct link, not the gateway host) when a profile names it, and a profile
   declares a bearer credential as below. Still UNKNOWN: Docker-driver GPU
   sandboxes on sm_120 (not needed for the harness).
@@ -188,7 +188,7 @@ credentials:
 discovery:
   credentials: [api_key]
 endpoints:
-  - host: lab-desktop
+  - host: <desktop link address>   # literal; a sandbox resolving lab-desktop is untested
     port: 4000
     protocol: rest
     access: read-write

@@ -109,7 +109,8 @@ toolkit versions drifted apart after Phase 0 and were matched again on
 2026-09-27. The rule is "identical except the architecture", so recheck them
 before putting a difference between the nodes down to the architecture.
 
-Connected by a direct 2.5GbE cable on a private /30 (`lab-desktop` / `lab-laptop`),
+Connected by a direct 2.5GbE cable on a private /30 whose two ends are named
+`lab-desktop` and `lab-laptop` (`lab install` writes them into /etc/hosts),
 0.55 ms RTT. See [host/](host/).
 
 The link is also the pool's interconnect: ~280 MB/s NCCL, ~0.24 ms per token
@@ -196,12 +197,12 @@ without taking the endpoint down for everything else. LiteLLM itself needs no GP
 over Ray, with the stage boundary crossing the direct link. Through the front
 door it is the model `pool`, which names whichever `POOL_MODEL` is up:
 
-    http://lab-desktop:4000/v1      model "pool" (LiteLLM key required)
-    http://lab-desktop:8200/v1      direct, no auth; what bench/ scripts use
+    http://lab-desktop:4000/v1    model "pool" (LiteLLM key required)
+    http://lab-desktop:8200/v1    direct, no auth; what bench/ scripts use
 
 The direct port binds the link address, not every interface, so the desktop's
 Wi-Fi address does not answer on it. That is not a firewall: a LAN machine that
-added a route to lab-desktop through the desktop would still get through.
+added a route to the link address through the desktop would still get through.
 
 The script always passes `--no-enable-flashinfer-autotune`. The autotune hook is
 gated per device on compute capability, and it deadlocks when the two ranks
@@ -343,8 +344,10 @@ tool. Site-specific values are written in rather than parametrized, because
 every path a systemd unit points at is deployed state. To run it elsewhere,
 these are the values to change:
 
-    lab-desktop / lab-laptop   direct-link addresses: host/, bin/lab, serving/,
-                            monitoring/prometheus.yml, bench/ scripts
+    the link's /30          placeholders in host/; `lab install` derives the
+                            addresses from it and names them lab-desktop and
+                            lab-laptop, which bin/lab, serving/, monitoring/
+                            and bench/ scripts use
     /home/david/gpu-lab     checkout path: bin/lab, nodes/*/llama-swap.service,
                             monitoring/
     User=david              systemd units in nodes/ and monitoring/

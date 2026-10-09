@@ -1,6 +1,8 @@
 # Desktop direct-link stanza only — merge into /etc/netplan/00-installer-config.yaml.
 # The real file also contains a wifis: block with a cleartext PSK. Do not copy that here.
 # Note: no gateway4 and no nameservers. This link carries node-to-node traffic only.
+# The <...> values are placeholders, because this repo is public: the NIC's MAC,
+# and the lower host address of the link's /30 (host/README.md).
 network:
   version: 2
   ethernets:

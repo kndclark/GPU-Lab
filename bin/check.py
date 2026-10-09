@@ -57,12 +57,24 @@ swap_desktop = load("nodes/desktop/llama-swap.yaml")
 swap_laptop = load("nodes/laptop/llama-swap.yaml")
 load("monitoring/docker-compose.yml")
 
-# Which llama-swap config answers on which address. Both nodes listen on :8080.
+lab_src = open(os.path.join(REPO, "bin/lab")).read()
+
+
+def lab_var(name):
+    m = re.search(rf"^{name}=([\w.-]+)", lab_src, re.M)
+    return m.group(1) if m else None
+
+
+# Which llama-swap config answers on which host. Both nodes listen on :8080.
+# The link's names are bin/lab's, which 'lab install' puts in /etc/hosts.
+DESKTOP_HOST, LAPTOP_HOST = lab_var("DESKTOP_HOST"), lab_var("LAPTOP_HOST")
+if not (DESKTOP_HOST and LAPTOP_HOST):
+    fails.append("bin/lab: could not read DESKTOP_HOST or LAPTOP_HOST")
 BY_HOST = {
     "127.0.0.1": ("desktop", swap_desktop),
     "localhost": ("desktop", swap_desktop),
-    "lab-desktop": ("desktop", swap_desktop),
-    "lab-laptop": ("laptop", swap_laptop),
+    DESKTOP_HOST: ("desktop", swap_desktop),
+    LAPTOP_HOST: ("laptop", swap_laptop),
 }
 
 
@@ -73,15 +85,13 @@ def served(cfg):
 # The pool is not behind llama-swap: ray-head serves it on its own port, bound
 # to the desktop's link address, under an extra name. Read from bin/lab rather
 # than repeated here, so the two cannot drift.
-lab_src = open(os.path.join(REPO, "bin/lab")).read()
 m = re.search(r"^POOL_PORT=(\d+)$", lab_src, re.M)
 POOL_PORT = m.group(1) if m else None
 m = re.search(r"--served-model-name \$POOL_MODEL (\S+)", lab_src)
 POOL_NAME = m.group(1) if m else None
-m = re.search(r"^DESKTOP_ADDR=([\d.]+)", lab_src, re.M)
-POOL_HOST = m.group(1) if m else None
-if not (POOL_PORT and POOL_NAME and POOL_HOST):
-    fails.append("bin/lab: could not read POOL_PORT, DESKTOP_ADDR or the pool's served name")
+POOL_HOST = DESKTOP_HOST
+if not (POOL_PORT and POOL_NAME):
+    fails.append("bin/lab: could not read POOL_PORT or the pool's served name")
 
 
 # ---- 3. every model LiteLLM publishes must exist on the node it points at ----
@@ -189,9 +199,20 @@ if os.path.exists(unit):
 if (os.environ.get("GPU_LAB_NODE") or socket.gethostname()) in ("laptop", "david-Legion-Pro-7-16IAX10H"):
     record = "host/laptop-fstab-model-cache.line"
 
+    # The record names the server (lab-desktop) where fstab may hold its address;
+    # both mean the same mount, so compare them resolved.
+    def resolved(fields):
+        host, sep, path = fields[0].partition(":")
+        if sep:
+            try:
+                host = socket.gethostbyname(host)
+            except OSError:
+                pass
+        return (host + sep + path,) + fields[1:]
+
     def mount_lines(path):
         return {
-            tuple(line.split())
+            resolved(tuple(line.split()))
             for line in open(path)
             if line.strip() and not line.lstrip().startswith("#")
             and line.split()[1:2] in (["/srv/model-cache"], ["/srv/model-cache-nfs"])

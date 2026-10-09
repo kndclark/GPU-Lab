@@ -189,7 +189,7 @@ struct DiffArgs {
     #[arg(long, default_value = "http://lab-desktop:9090")]
     prometheus: String,
     /// The other node, reached over ssh. This node is probed locally.
-    #[arg(long, default_value = "lab-desktop")]
+    #[arg(long, default_value = "llm")]
     peer: String,
     /// Where results are recorded.
     #[arg(long, default_value = "sm-differ.db")]

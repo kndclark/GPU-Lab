@@ -11,9 +11,9 @@
 #     RTNETLINK answers: No such device
 #
 # With the laptop's PHY powered down the desktop sees no carrier either, so
-# systemd-networkd never applies lab-desktop and the whole lab looks unreachable
+# systemd-networkd never applies the desktop's address and the whole lab looks unreachable
 # from an entirely healthy server. Rebinding the PCI driver re-probes the
-# device; NetworkManager then reapplies <laptop link address>/30 without help.
+# device; NetworkManager then reapplies the link address without help.
 #
 # Run by gpu-lab-igc-resume.service on resume. Safe to run by hand, and a no-op
 # on any machine without this NIC.
@@ -76,7 +76,7 @@ if ! healthy; then
 fi
 
 # The device is back, but 2.5GbE negotiation takes a few seconds and
-# NetworkManager only reapplies <laptop link address>/30 once carrier appears. Wait for the
+# NetworkManager only reapplies the link address once carrier appears. Wait for the
 # real end state before logging: the journal is the only evidence anyone gets
 # after an unattended resume, and a premature line there reads like a failure.
 for _ in $(seq 1 "$LINK_TRIES"); do carrier && break; sleep 1; done

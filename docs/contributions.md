@@ -551,7 +551,7 @@ fix.
 **Note on where the evidence lived.** `*.log` is gitignored, so the sm_86 logs
 exist only on the desktop and the sm_120 logs only on the laptop. This file
 previously said "the `.log` alongside it" without saying which node. It is
-`lab-desktop:~/gpu-lab/kernels/results/`.
+`llm:~/gpu-lab/kernels/results/`.
 
 <a id="c8"></a>
 ## C8 -- Ampere FP8 tests fail rather than skip, in two directories

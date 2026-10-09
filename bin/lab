@@ -10,7 +10,7 @@
 #   lab status               what is running, and is the GPU actually free
 #   lab reload  [svc]        apply edited config files (they are read-only mounts)
 #   lab check                validate configs before a push deploys them
-#   lab install              (re)write this node's systemd unit from the repo
+#   lab install              (re)write this node's systemd units and link names
 #   lab logs    <svc>        follow logs (llama-swap|litellm|prometheus|grafana|model|pool|mirror)
 #   lab mirror  status       laptop: is the local weight copy current (read-only)
 #               sync [--wifi] [--force] [repo...]   copy + hash-check from the desktop
@@ -106,8 +106,27 @@ POOL_WAIT_SECS=${POOL_WAIT_SECS:-300}
 # Nemotron 3.5 Lightning pooled at 16 seqs decoded one request at 29.8 tok/s
 # eager and 198.6 with graphs, same answers (moe-qlora plan.md L2, 2026-10-02).
 POOL_EXTRA_FLAGS=${POOL_EXTRA_FLAGS:-}
-DESKTOP_ADDR=lab-desktop; DESKTOP_NIC=enp5s0
-LAPTOP_ADDR=lab-laptop;  LAPTOP_NIC=enp129s0
+# The direct link's addresses are not written in this repo, which is public.
+# 'lab install' derives them from the link NIC's /30 (the desktop holds the
+# lower host address) and records them in /etc/hosts as lab-desktop and
+# lab-laptop. Configs use those names; ray and vLLM want a literal IP, so the
+# script resolves them once, here, and is empty until install has run.
+DESKTOP_HOST=lab-desktop; DESKTOP_NIC=enp5s0
+LAPTOP_HOST=lab-laptop;   LAPTOP_NIC=enp129s0
+link_ip() { getent ahostsv4 "$1" 2>/dev/null | awk '{print $1; exit}' || true; }
+DESKTOP_ADDR=$(link_ip "$DESKTOP_HOST")
+LAPTOP_ADDR=$(link_ip "$LAPTOP_HOST")
+# "<desktop addr> <laptop addr>" from the /30 on NIC $1, whichever end this is.
+link_pair() {
+    local cidr a b c d n
+    cidr=$(ip -4 -o addr show dev "$1" 2>/dev/null | awk '{print $4; exit}' || true)
+    case "$cidr" in */30) ;; *) return 1 ;; esac
+    IFS=. read -r a b c d <<< "${cidr%/*}"
+    n=$(( (a << 24 | b << 16 | c << 8 | d) & ~3 ))
+    printf '%d.%d.%d.%d %d.%d.%d.%d\n' \
+        $((n >> 24 & 255)) $((n >> 16 & 255)) $((n >> 8 & 255)) $(((n & 255) + 1)) \
+        $((n >> 24 & 255)) $((n >> 16 & 255)) $((n >> 8 & 255)) $(((n & 255) + 2))
+}
 # The per-node blocks below set an idle floor for whichever node is running this
 # script, but the pool has to judge both cards at once and it always runs from
 # the laptop -- so the desktop's floor has to be named here as well.
@@ -148,7 +167,7 @@ case "$NODE" in
         WARM_KIND=chat
         # Headless: anything above a trickle means something is still attached.
         GPU_IDLE_MIB=1000
-        FRONT_DOOR="http://lab-desktop:4000/v1"
+        FRONT_DOOR="http://$DESKTOP_HOST:4000/v1"
         ;;
     laptop)
         SWAP_CONFIG=$REPO/nodes/laptop/llama-swap.yaml
@@ -166,7 +185,7 @@ case "$NODE" in
         # ~1.7 GiB above the display. Fine for a model (8.4 GiB), not a
         # guarantee that a small training job has exited.
         GPU_IDLE_MIB=3000
-        FRONT_DOOR="http://lab-laptop:8080/v1  (via the desktop's LiteLLM at http://lab-desktop:4000/v1)"
+        FRONT_DOOR="http://$LAPTOP_HOST:8080/v1  (via the desktop's LiteLLM at http://$DESKTOP_HOST:4000/v1)"
         ;;
     *)
         echo "cannot identify this node (no sm_86/sm_120 GPU, unrecognised hostname)." >&2
@@ -188,9 +207,9 @@ wait_gpu_clear() {
     return 1
 }
 
-peer_addr() { case "$NODE" in desktop) echo lab-laptop ;; laptop) echo lab-desktop ;; esac; }
+peer_addr() { case "$NODE" in desktop) echo "$LAPTOP_HOST" ;; laptop) echo "$DESKTOP_HOST" ;; esac; }
 
-# The "llm" alias resolves to lab-desktop over the direct link (see ~/.ssh/config),
+# The "llm" alias points at the desktop's end of the direct link (~/.ssh/config),
 # so it stops working when that link does. That is the honest dependency rather
 # than a limitation: the pool runs NCCL over the same cable, so an ssh route that
 # survived the link going down would only let it fail later and less clearly.
@@ -319,12 +338,14 @@ cmd_up() {
     # Both nodes. The desktop especially: LiteLLM publishes qwen3-embed with an
     # api_base of lab-laptop, so an all-green front door here can still be
     # advertising an upstream that nothing can reach.
+    local peer_label
+    peer_label=$(printf '%-18s' "peer $(peer_addr)")
     if ping -c1 -W2 "$(peer_addr)" >/dev/null 2>&1; then
-        ok "peer $(peer_addr)     : OK"
+        ok "$peer_label: OK"
     elif [ "$HAS_COMPOSE" = 1 ]; then
-        ok "peer $(peer_addr)     : UNREACHABLE -- qwen3-embed falls back to this node (~90 s load)"
+        ok "$peer_label: UNREACHABLE -- qwen3-embed falls back to this node (~90 s load)"
     else
-        ok "peer $(peer_addr)     : UNREACHABLE -- this node is serving to nobody."
+        ok "$peer_label: UNREACHABLE -- this node is serving to nobody."
         ok "                      $(link_down_hint)"
     fi
 
@@ -458,7 +479,7 @@ try:
     here=[m['model_name'] for m in cfg.get('model_list',[])
           if ':$POOL_PORT' not in str(m.get('litellm_params',{}).get('api_base',''))
           and ('127.0.0.1' in str(m.get('litellm_params',{}).get('api_base',''))
-          or 'lab-desktop' in str(m.get('litellm_params',{}).get('api_base','')))]
+          or '$DESKTOP_HOST' in str(m.get('litellm_params',{}).get('api_base','')))]
     print(', '.join(here) or '(none)')
 except Exception: print('(could not read litellm config)')
 " 2>/dev/null)"
@@ -481,8 +502,13 @@ pool_require_driver() {
         echo "  run it there:  $REPO/bin/lab pool $1" >&2
         exit 1
     fi
+    if [ -z "$DESKTOP_ADDR" ] || [ -z "$LAPTOP_ADDR" ]; then
+        echo "  $DESKTOP_HOST / $LAPTOP_HOST are not in /etc/hosts, and ray needs their addresses." >&2
+        echo "  with the link up, on this node:  $REPO/bin/lab install" >&2
+        exit 1
+    fi
     if ! ping -c1 -W2 "$DESKTOP_ADDR" >/dev/null 2>&1; then
-        echo "  direct link to $DESKTOP_ADDR is DOWN, and the pool runs NCCL over it." >&2
+        echo "  direct link to $DESKTOP_HOST is DOWN, and the pool runs NCCL over it." >&2
         echo "    $(link_down_hint)" >&2
         exit 1
     fi
@@ -863,20 +889,25 @@ cmd_status() {
     nvidia-smi --query-gpu=memory.used,memory.total,temperature.gpu,power.draw --format=csv,noheader | sed 's/^/  /'
 
     say "direct link"
-    # Node-agnostic: find whichever end of the /30 this machine owns. A dead
-    # link here is the single most common reason the lab looks unreachable from
-    # an otherwise healthy server -- see host/laptop-igc-resume-repair.sh.
-    dev=$(ip -o route show <link network>/30 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)
-    if [ -z "$dev" ]; then
-        ok "DOWN -- no <link network>/30 route ($(link_down_hint))"
+    # This node's end of the /30, read from its link NIC. A dead link here is
+    # the single most common reason the lab looks unreachable from an otherwise
+    # healthy server -- see host/laptop-igc-resume-repair.sh.
+    [ "$NODE" = laptop ] && dev=$LAPTOP_NIC || dev=$DESKTOP_NIC
+    me=$(ip -4 -o addr show "$dev" 2>/dev/null | awk '{print $4; exit}' || true)
+    if [ -z "$me" ]; then
+        ok "DOWN -- $dev has no address ($(link_down_hint))"
     else
-        me=$(ip -4 -o addr show "$dev" 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
-        case "$me" in lab-desktop) peer=lab-laptop ;; lab-laptop) peer=lab-desktop ;; *) peer= ;; esac
+        peer=$(peer_addr)
         ok "$dev $me $(ethtool "$dev" 2>/dev/null | awk -F': ' '/Speed:/{print $2}')"
-        if [ -n "$peer" ] && ping -c1 -W2 "$peer" >/dev/null 2>&1; then
+        # /etc/hosts goes stale if the link is renumbered; ray would then bind
+        # the wrong address, so say so here rather than at 'lab pool up'.
+        if [ "$(link_pair "$dev")" != "$DESKTOP_ADDR $LAPTOP_ADDR" ]; then
+            ok "$DESKTOP_HOST / $LAPTOP_HOST in /etc/hosts do not match $dev: run 'lab install'"
+        fi
+        if ping -c1 -W2 "$peer" >/dev/null 2>&1; then
             ok "peer $peer OK ($(ping -c3 -W2 -q "$peer" 2>/dev/null | awk -F/ '/rtt/{print $5" ms avg"}'))"
         else
-            ok "peer ${peer:-unknown} UNREACHABLE"
+            ok "peer $peer UNREACHABLE"
         fi
     fi
 
@@ -969,6 +1000,30 @@ cmd_install() {
         say "systemd still wants a reload for:$stale"
         sudo systemctl daemon-reload
         ok "daemon-reloaded"
+    fi
+
+    # The link's names (see DESKTOP_HOST above). Rewritten in place, so a
+    # renumbered link is picked up by running install again. LiteLLM and
+    # Prometheus run with host networking and get a copy of /etc/hosts when
+    # their container starts: one already running sees new names only after
+    # 'lab reload'.
+    say "link names in /etc/hosts"
+    local nic pair want tmp
+    [ "$NODE" = laptop ] && nic=$LAPTOP_NIC || nic=$DESKTOP_NIC
+    if ! pair=$(link_pair "$nic"); then
+        ok "skipped: $nic has no /30 address (link down?); existing entries left as they are"
+        return 0
+    fi
+    want=$(printf '%s %s\n%s %s' "${pair% *}" "$DESKTOP_HOST" "${pair#* }" "$LAPTOP_HOST")
+    if [ "$(grep -E "[[:space:]]($DESKTOP_HOST|$LAPTOP_HOST)\$" /etc/hosts || true)" = "$want" ]; then
+        ok "already current"
+    else
+        tmp=$(mktemp)
+        grep -vE "[[:space:]]($DESKTOP_HOST|$LAPTOP_HOST)\$" /etc/hosts > "$tmp" || true
+        printf '%s\n' "$want" >> "$tmp"
+        sudo cp "$tmp" /etc/hosts
+        rm -f "$tmp"
+        ok "written: $DESKTOP_HOST ${pair% *}, $LAPTOP_HOST ${pair#* }"
     fi
 }
 

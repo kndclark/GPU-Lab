@@ -1,3 +1,4 @@
 # /etc/exports.d/model-cache.exports on the desktop, then: sudo exportfs -ra
 # Exported to the laptop's direct-link address only; NFS itself listens on 0.0.0.0.
-/srv/model-cache <laptop link address>/32(rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=1000)
+# lab-laptop comes from /etc/hosts ('lab install'), so run that before exportfs.
+/srv/model-cache lab-laptop(rw,sync,no_subtree_check,all_squash,anonuid=1000,anongid=1000)
