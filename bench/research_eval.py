@@ -481,6 +481,13 @@ AUDIT_KEYS = {"hit": "hit", "grounded": "grounded", "denied": "denied_heuristic"
               "claims": "claims_unrun_lookup"}
 REFUSED = ("refused by eval harness: only `<tool> --help`, `<tool> -h`, "
            "`<tool> <subcommand> --help` and `man <page>` are permitted")
+# --allowlist-in-tool (moe-qlora G1b): the same rule, stated up front in the bash
+# tool's description instead of only in the refusal. The default leaves it out.
+ALLOWLIST_NOTE = (" In this evaluation the harness runs only `<tool> --help`, `<tool> -h`, "
+                  "`<tool> <subcommand> --help` and `man <page>`; any other command, pipes "
+                  "and extra arguments included, is refused.")
+TOOLS_ALLOWLIST = [{**t, "function": {**t["function"], "description": t["function"]["description"] + ALLOWLIST_NOTE}}
+                   if t["function"]["name"] == "bash" else t for t in TOOLS]
 
 
 def run_argv(argv, timeout=15):
@@ -995,7 +1002,8 @@ def run_item(a, item, bins):
         for turn in range(a.max_calls + 1):
             body = {"model": a.model, "messages": messages, "add_generation_prompt": True}
             if a.tools:
-                body["tools"] = TOOLS + ([a.promql_tool] if a.set == "promql" else [])
+                body["tools"] = ((TOOLS_ALLOWLIST if getattr(a, "allowlist_in_tool", False) else TOOLS)
+                                 + ([a.promql_tool] if a.set == "promql" else []))
             if a.thinking != "default":
                 body["chat_template_kwargs"] = {"enable_thinking": a.thinking == "on"}
             tok = post(a.base, "/tokenize", body)
@@ -1446,6 +1454,8 @@ def main():
     ap.add_argument("--promql-catalog", action="store_true",
                     help="list the lab's gpulab_ and vllm: metric names in the promql tool's description, "
                          "as a deployed triage agent would have them")
+    ap.add_argument("--allowlist-in-tool", action="store_true",
+                    help="state the allowlist in the bash tool's description (default: only refusals name it)")
     ap.add_argument("--set", choices=("v1", "v2", "rocky", "promql", "general", "alert", "trap3"), default="v1",
                     help="v1: the 158 items of 2026-09-23; v2: new tools and question forms; "
                          "rocky: Rocky 9 farm tools, docs from bench/rocky-docs; "
@@ -1521,7 +1531,8 @@ def main():
     print(json.dumps(summary, indent=1))
     versions = {b: (run_doc([b, "--version"]) or "").strip().splitlines()[:1] for b in sorted(bins)}
     out = a.out or os.path.join(HERE, "results", f"research-eval-{a.label}.json")
-    json.dump({"label": a.label, "set": a.set, "promql_catalog": a.promql_catalog, "model": a.model, "base": a.base, "tools": a.tools,
+    json.dump({"label": a.label, "set": a.set, "promql_catalog": a.promql_catalog,
+               "allowlist_in_tool": a.allowlist_in_tool, "model": a.model, "base": a.base, "tools": a.tools,
                "thinking": a.thinking, "max_tokens": a.max_tokens, "max_calls": a.max_calls,
                "temperature": a.temperature, "top_p": a.top_p, "sample_seed": a.sample_seed, "window": a.window, "seed": a.seed, "limit": a.limit,
                "started": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(t0)),
