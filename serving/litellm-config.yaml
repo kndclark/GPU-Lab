@@ -57,6 +57,46 @@ model_list:
       node: pooled
       arch: sm_86+sm_120
 
+  # ---- the agent model: Lightning + G6u on one card, either node (lab up agent) ----
+  # "agent" is the adapter, "agent-base" the same engine without it. Each
+  # node's LiteLLM lists its own card first and the peer's as the fallback
+  # (serving/litellm-laptop.yaml is the mirror image), so the name answers
+  # while either node serves it. Unlike everything above, this vLLM checks a
+  # key: its port is open on every interface (bin/lab agent_up says why).
+  - model_name: agent
+    litellm_params:
+      model: hosted_vllm/lightning-g6u
+      api_base: http://127.0.0.1:8300/v1
+      api_key: os.environ/LITELLM_MASTER_KEY
+    model_info:
+      node: desktop
+      arch: sm_86
+  - model_name: agent-base
+    litellm_params:
+      model: hosted_vllm/lightning
+      api_base: http://127.0.0.1:8300/v1
+      api_key: os.environ/LITELLM_MASTER_KEY
+    model_info:
+      node: desktop
+      arch: sm_86
+  # Fallback targets only.
+  - model_name: agent-laptop
+    litellm_params:
+      model: hosted_vllm/lightning-g6u
+      api_base: http://lab-laptop:8300/v1
+      api_key: os.environ/LITELLM_MASTER_KEY
+    model_info:
+      node: laptop
+      arch: sm_120
+  - model_name: agent-base-laptop
+    litellm_params:
+      model: hosted_vllm/lightning
+      api_base: http://lab-laptop:8300/v1
+      api_key: os.environ/LITELLM_MASTER_KEY
+    model_info:
+      node: laptop
+      arch: sm_120
+
 litellm_settings:
   drop_params: true          # tolerate client params vLLM does not implement
   request_timeout: 600       # a cold model load through llama-swap takes ~2 min
@@ -67,6 +107,8 @@ litellm_settings:
   # them from the always-on node.
   fallbacks:
     - qwen3-embed: ["qwen3-embed-desktop"]
+    - agent: ["agent-laptop"]
+    - agent-base: ["agent-base-laptop"]
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

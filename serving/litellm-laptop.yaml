@@ -1,0 +1,53 @@
+# LiteLLM on the laptop: the agent model only (nodes/laptop/docker-compose.yml).
+#
+# The desktop's LiteLLM (litellm-config.yaml) is the front door for everything
+# else. This one exists so that a coding agent on the laptop keeps working when
+# the desktop is off: it lists this card first and the desktop's as the
+# fallback, the mirror image of the desktop's agent routes. Same model names,
+# same key, so a client moves between nodes by changing only the host.
+
+model_list:
+  - model_name: agent
+    litellm_params:
+      model: hosted_vllm/lightning-g6u
+      api_base: http://127.0.0.1:8300/v1
+      api_key: os.environ/LITELLM_MASTER_KEY
+    model_info:
+      node: laptop
+      arch: sm_120
+  - model_name: agent-base
+    litellm_params:
+      model: hosted_vllm/lightning
+      api_base: http://127.0.0.1:8300/v1
+      api_key: os.environ/LITELLM_MASTER_KEY
+    model_info:
+      node: laptop
+      arch: sm_120
+  # Fallback targets only.
+  - model_name: agent-desktop
+    litellm_params:
+      model: hosted_vllm/lightning-g6u
+      api_base: http://lab-desktop:8300/v1
+      api_key: os.environ/LITELLM_MASTER_KEY
+    model_info:
+      node: desktop
+      arch: sm_86
+  - model_name: agent-base-desktop
+    litellm_params:
+      model: hosted_vllm/lightning
+      api_base: http://lab-desktop:8300/v1
+      api_key: os.environ/LITELLM_MASTER_KEY
+    model_info:
+      node: desktop
+      arch: sm_86
+
+litellm_settings:
+  drop_params: true
+  request_timeout: 600
+  num_retries: 1
+  fallbacks:
+    - agent: ["agent-desktop"]
+    - agent-base: ["agent-base-desktop"]
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

@@ -1,0 +1,19 @@
+# The laptop's LiteLLM: the agent model only (serving/litellm-laptop.yaml).
+# Started by 'lab up' and 'lab up agent', stopped by 'lab down'. Prometheus and
+# Grafana stay on the desktop (monitoring/docker-compose.yml).
+#
+# Bound to localhost: clients on this machine are its only users, and the
+# desktop has its own LiteLLM that reaches this card's vLLM directly.
+name: gpu-lab-laptop
+
+services:
+  litellm:
+    image: litellm/litellm:v1.100.1
+    container_name: litellm
+    network_mode: host
+    restart: unless-stopped
+    env_file:
+      - /etc/gpu-lab/litellm.env      # the desktop's key, copied by 'lab install'
+    volumes:
+      - /home/david/gpu-lab/serving/litellm-laptop.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--host", "127.0.0.1"]

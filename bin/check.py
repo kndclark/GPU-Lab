@@ -52,10 +52,14 @@ if os.path.exists(lab):
 
 # ---- 2. every config must parse ----
 litellm = load("serving/litellm-config.yaml")
+litellm_laptop = load("serving/litellm-laptop.yaml")
 prom = load("monitoring/prometheus.yml")
 swap_desktop = load("nodes/desktop/llama-swap.yaml")
 swap_laptop = load("nodes/laptop/llama-swap.yaml")
-load("monitoring/docker-compose.yml")
+COMPOSE = {
+    "monitoring/docker-compose.yml": load("monitoring/docker-compose.yml"),
+    "nodes/laptop/docker-compose.yml": load("nodes/laptop/docker-compose.yml"),
+}
 
 lab_src = open(os.path.join(REPO, "bin/lab")).read()
 
@@ -76,6 +80,11 @@ BY_HOST = {
     DESKTOP_HOST: ("desktop", swap_desktop),
     LAPTOP_HOST: ("laptop", swap_laptop),
 }
+# The laptop's own LiteLLM, where localhost is the laptop.
+BY_HOST_LAPTOP = dict(BY_HOST, **{
+    "127.0.0.1": ("laptop", swap_laptop),
+    "localhost": ("laptop", swap_laptop),
+})
 
 
 def served(cfg):
@@ -93,13 +102,23 @@ POOL_HOST = DESKTOP_HOST
 if not (POOL_PORT and POOL_NAME):
     fails.append("bin/lab: could not read POOL_PORT or the pool's served name")
 
+# The agent model ('lab up agent') is not behind llama-swap either: one vLLM
+# per node on its own port, serving the base model and its adapter under two
+# names. Unlike llama-swap and the pool, it checks a key.
+m = re.search(r"^AGENT_PORT=(\d+)$", lab_src, re.M)
+AGENT_PORT = m.group(1) if m else None
+AGENT_NAMES = {lab_var("AGENT_NAME"), lab_var("AGENT_LORA_NAME")} - {None}
+if not (AGENT_PORT and len(AGENT_NAMES) == 2):
+    fails.append("bin/lab: could not read AGENT_PORT, AGENT_NAME or AGENT_LORA_NAME")
+
 
 # ---- 3. every model LiteLLM publishes must exist on the node it points at ----
 # This is the check that earns its keep: a typo here is a 404 at request time on
-# a model the front door claims to serve, and nothing else catches it.
-declared = set()
-if litellm:
-    for entry in litellm.get("model_list", []):
+# a model the front door claims to serve, and nothing else catches it. Both
+# nodes run a LiteLLM; the laptop's routes the agent model only.
+def check_litellm(label, cfg, by_host):
+    declared = set()
+    for entry in cfg.get("model_list", []):
         name = entry.get("model_name")
         declared.add(name)
         params = entry.get("litellm_params", {}) or {}
@@ -107,43 +126,78 @@ if litellm:
         upstream = str(params.get("model", "")).split("/", 1)[-1]
         m = re.match(r"https?://([^:/]+):(\d+)", api_base)
         if not m:
-            fails.append(f"litellm '{name}': unparseable api_base {api_base!r}")
+            fails.append(f"{label} '{name}': unparseable api_base {api_base!r}")
             continue
         host, port = m.group(1), m.group(2)
         if POOL_PORT and port == POOL_PORT:
             if host != POOL_HOST:
-                fails.append(f"litellm '{name}': the pool listens on {POOL_HOST}:{port} only, not {host}")
+                fails.append(f"{label} '{name}': the pool listens on {POOL_HOST}:{port} only, not {host}")
             elif upstream != POOL_NAME:
-                fails.append(f"litellm '{name}': upstream '{upstream}' is not the pool's served name '{POOL_NAME}'")
+                fails.append(f"{label} '{name}': upstream '{upstream}' is not the pool's served name '{POOL_NAME}'")
             else:
-                oks.append(f"litellm '{name}' -> pool {host}:{port} serves '{upstream}'")
+                oks.append(f"{label} '{name}' -> pool {host}:{port} serves '{upstream}'")
             continue
-        if host not in BY_HOST:
-            warns.append(f"litellm '{name}': api_base host {host} is not a known node")
+        if AGENT_PORT and port == AGENT_PORT:
+            if host not in by_host:
+                fails.append(f"{label} '{name}': api_base host {host} is not a node")
+            elif upstream not in AGENT_NAMES:
+                fails.append(
+                    f"{label} '{name}': upstream '{upstream}' is not the agent model's "
+                    f"(it serves: {', '.join(sorted(AGENT_NAMES))})"
+                )
+            elif str(params.get("api_key", "none")) == "none":
+                fails.append(f"{label} '{name}': the agent model checks a key, and this route sends none")
+            else:
+                oks.append(f"{label} '{name}' -> {by_host[host][0]} agent :{port} serves '{upstream}'")
             continue
-        node, cfg = BY_HOST[host]
-        if cfg is None:
-            fails.append(f"litellm '{name}': no llama-swap config found for the {node}")
-        elif upstream not in served(cfg):
+        if host not in by_host:
+            warns.append(f"{label} '{name}': api_base host {host} is not a known node")
+            continue
+        node, swap = by_host[host]
+        if swap is None:
+            fails.append(f"{label} '{name}': no llama-swap config found for the {node}")
+        elif upstream not in served(swap):
             fails.append(
-                f"litellm '{name}': upstream '{upstream}' is not served by the "
-                f"{node} (it serves: {', '.join(sorted(served(cfg))) or 'nothing'})"
+                f"{label} '{name}': upstream '{upstream}' is not served by the "
+                f"{node} (it serves: {', '.join(sorted(served(swap))) or 'nothing'})"
             )
         else:
-            oks.append(f"litellm '{name}' -> {node}:{port} serves '{upstream}'")
+            oks.append(f"{label} '{name}' -> {node}:{port} serves '{upstream}'")
 
     # ---- 4. fallbacks must name models that actually exist ----
-    for fb in (litellm.get("litellm_settings", {}) or {}).get("fallbacks", []) or []:
+    for fb in (cfg.get("litellm_settings", {}) or {}).get("fallbacks", []) or []:
         for src, targets in fb.items():
             if src not in declared:
-                fails.append(f"fallback source '{src}' is not a declared model_name")
+                fails.append(f"{label} fallback source '{src}' is not a declared model_name")
             for t in targets:
                 if t not in declared:
-                    fails.append(f"fallback target '{t}' is not a declared model_name")
+                    fails.append(f"{label} fallback target '{t}' is not a declared model_name")
                 elif t == src:
-                    fails.append(f"fallback '{src}' points at itself")
+                    fails.append(f"{label} fallback '{src}' points at itself")
             if src in declared and all(t in declared for t in targets):
-                oks.append(f"fallback {src} -> {', '.join(targets)}")
+                oks.append(f"{label} fallback {src} -> {', '.join(targets)}")
+
+
+if litellm:
+    check_litellm("litellm", litellm, BY_HOST)
+if litellm_laptop:
+    check_litellm("litellm-laptop", litellm_laptop, BY_HOST_LAPTOP)
+
+# ---- 4b. each LiteLLM mounts a config that is in the repo ----
+# A bind mount whose source is missing does not fail: docker creates an empty
+# directory there, and LiteLLM dies at start reading it as its config.
+for path, compose in COMPOSE.items():
+    svc = ((compose or {}).get("services", {}) or {}).get("litellm")
+    if not svc:
+        continue
+    for vol in svc.get("volumes", []) or []:
+        src = str(vol).split(":", 1)[0]
+        if src.startswith("/home/david/gpu-lab/"):
+            src = os.path.join(REPO, src[len("/home/david/gpu-lab/"):])
+        if not os.path.isfile(src):
+            fails.append(f"{path}: litellm mounts {rel(src)}, which is not in the repo")
+        else:
+            oks.append(f"{path}: litellm mounts {rel(src)}")
 
 # ---- 5. Prometheus must scrape the ports llama-swap actually proxies ----
 if prom:

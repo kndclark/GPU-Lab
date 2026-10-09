@@ -4,6 +4,7 @@
 # right thing for whichever one it is on.
 #
 #   lab up      [--warm]     start everything (optionally preload this node's model)
+#   lab up      agent        serve the agent model on THIS card instead (exclusive)
 #   lab down    [--boot-off] stop everything (optionally also disable autostart)
 #               [--gpu-only] stop only what holds the GPU; leave the front door up
 #   lab pool    up|down      one model across BOTH cards (run it from the laptop)
@@ -11,7 +12,7 @@
 #   lab reload  [svc]        apply edited config files (they are read-only mounts)
 #   lab check                validate configs before a push deploys them
 #   lab install              (re)write this node's systemd units and link names
-#   lab logs    <svc>        follow logs (llama-swap|litellm|prometheus|grafana|model|pool|mirror)
+#   lab logs    <svc>        follow logs (llama-swap|litellm|prometheus|grafana|model|agent|pool|mirror)
 #   lab mirror  status       laptop: is the local weight copy current (read-only)
 #               sync [--wifi] [--force] [repo...]   copy + hash-check from the desktop
 #               verify [repo...]  re-hash every blob;  prune [--apply]  report stale files
@@ -20,9 +21,10 @@
 # Node roles differ, so the script's work differs:
 #
 #   desktop (sm_86)  always-on server. llama-swap + LiteLLM + Prometheus + Grafana.
-#   laptop  (sm_120) not always-on. llama-swap only -- the desktop's LiteLLM routes
-#                    to it over the direct link, so it serves without a front door
-#                    of its own and has no monitoring stack to start.
+#   laptop  (sm_120) not always-on. llama-swap, plus a LiteLLM of its own that
+#                    routes only the agent model (localhost only). The desktop's
+#                    LiteLLM still routes to the laptop's llama-swap over the
+#                    direct link; there is no monitoring stack to start here.
 #
 # The two nodes stay independently controllable on purpose: Phase 2b trains on the
 # desktop while the laptop keeps answering on the same base URL.
@@ -106,6 +108,46 @@ POOL_WAIT_SECS=${POOL_WAIT_SECS:-300}
 # Nemotron 3.5 Lightning pooled at 16 seqs decoded one request at 29.8 tok/s
 # eager and 198.6 with graphs, same answers (moe-qlora plan.md L2, 2026-10-02).
 POOL_EXTRA_FLAGS=${POOL_EXTRA_FLAGS:-}
+
+# ---- the agent model ("lab up agent") ----
+# Nemotron 3.5 Lightning (NVFP4) with the G6u adapter, for coding and lab
+# agents (Codex, our own loop) on whichever node is free. One card holds it,
+# so either node can serve it and neither is the default; each node's LiteLLM
+# routes "agent" to its own card first and to the peer's when that is down.
+# Like the pool, it takes the whole card: llama-swap stops while it runs, and
+# "lab up" refuses until "lab down" has stopped it.
+#
+# The stock image, not the pool's: one card needs no Ray, and every Lightning
+# measurement (moe-qlora probes/desktop_agents.sh, l_single.sh) used this one.
+# The revision is pinned because the weights load offline from the cache.
+AGENT_IMAGE=vllm/vllm-openai:v0.29.0
+AGENT_MODEL=nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4
+AGENT_REVISION=bee7596271d1495f6992ae224aefde4410e816b8
+AGENT_ADAPTER=/srv/model-cache/adapters/lightning-g6u
+# Two names, one engine: the base model and the adapter on top of it. A
+# request picks one by its "model" field, so an A/B costs no second load.
+AGENT_NAME=lightning
+AGENT_LORA_NAME=lightning-g6u
+AGENT_CONTAINER=gpu-lab-agent
+AGENT_PORT=8300
+# The same on both nodes, and that is the point: LiteLLM falls back to the
+# peer mid-conversation, and a peer with a shorter context would reject what
+# the local card accepted. Measured with AGENT_MAXLEN=-1, which makes vLLM
+# fit the longest single sequence its KV cache holds (see AGENT_MAXLEN_NOTE).
+AGENT_MAXLEN=${AGENT_MAXLEN:-131072}
+AGENT_SEQS=${AGENT_SEQS:-16}
+# Empty means the most the card can give right now, capped at 0.92 (what the
+# desktop measurements ran at). The laptop drives a display, so its figure
+# moves with what is on screen; agent_fit below does the arithmetic.
+AGENT_GPU_UTIL=${AGENT_GPU_UTIL:-}
+# Cold start is ~2-4 min (weights, then CUDA graph capture). Graphs are not
+# optional for Lightning: eager decodes 7-8x slower (moe-qlora plan.md L2).
+AGENT_WAIT_SECS=${AGENT_WAIT_SECS:-600}
+AGENT_EXTRA_FLAGS=${AGENT_EXTRA_FLAGS:-}
+# The lab's one key. LiteLLM reads it as its master key, and the agent's vLLM
+# takes the same value as its API key (agent_up says why it needs one). Not
+# in git; on the laptop, 'lab install' copies the desktop's.
+LAB_KEY_FILE=/etc/gpu-lab/litellm.env
 # The direct link's addresses are not written in this repo, which is public.
 # 'lab install' derives them from the link NIC's /30 (the desktop holds the
 # lower host address) and records them in /etc/hosts as lab-desktop and
@@ -168,6 +210,10 @@ case "$NODE" in
         # Headless: anything above a trickle means something is still attached.
         GPU_IDLE_MIB=1000
         FRONT_DOOR="http://$DESKTOP_HOST:4000/v1"
+        LITELLM_DIR=$COMPOSE_DIR     # one compose project with the monitoring
+        # sm_86 has no FP4 tensor cores: without marlin for the dense layers too,
+        # Lightning NVFP4 does not run on the 3090 (moe-qlora probes/desktop_agents.sh).
+        AGENT_NODE_FLAGS="--linear-backend marlin"
         ;;
     laptop)
         SWAP_CONFIG=$REPO/nodes/laptop/llama-swap.yaml
@@ -186,6 +232,11 @@ case "$NODE" in
         # guarantee that a small training job has exited.
         GPU_IDLE_MIB=3000
         FRONT_DOOR="http://$LAPTOP_HOST:8080/v1  (via the desktop's LiteLLM at http://$DESKTOP_HOST:4000/v1)"
+        # A LiteLLM of its own, for the agent model only: a coding agent on the
+        # laptop should not stop working because the desktop is off. Bound to
+        # localhost; the desktop has its own and never needs this one.
+        LITELLM_DIR=$REPO/nodes/laptop
+        AGENT_NODE_FLAGS=""
         ;;
     *)
         echo "cannot identify this node (no sm_86/sm_120 GPU, unrecognised hostname)." >&2
@@ -247,7 +298,7 @@ cache_is_mirror() {
 }
 
 cmd_up() {
-    local n=1 total=$(( HAS_COMPOSE ? 4 : 3 ))
+    local n=1 total=4
 
     # Preflight, and it must come first. The unit carries RequiresMountsFor
     # /srv/model-cache. When that is the local mirror, a down link costs only
@@ -298,6 +349,13 @@ cmd_up() {
         echo "    $REPO/bin/lab pool down" >&2
         exit 1
     fi
+    # The agent model likewise holds the whole card, and on purpose.
+    if sudo docker ps --format '{{.Names}}' | grep -qx "$AGENT_CONTAINER"; then
+        echo "  the agent model is holding this card ($(gpu_used_mib) MiB in use)." >&2
+        echo "  it and llama-swap cannot be co-resident. stop it first:" >&2
+        echo "    $REPO/bin/lab down --gpu-only" >&2
+        exit 1
+    fi
 
     # Before llama-swap, and deliberately not stopped by "down --gpu-only": the
     # window this exporter exists for is the one where the serving plane is down
@@ -325,6 +383,18 @@ cmd_up() {
         for _ in $(seq 1 40); do
             curl -sf localhost:4000/health/liveliness >/dev/null 2>&1 && break; sleep 2
         done
+    else
+        # Its LiteLLM routes the agent model only, to this card or the
+        # desktop's, so it is worth starting whatever this card serves.
+        say "$((n++))/$total  front door (the agent model only)"
+        if sudo test -s "$LAB_KEY_FILE"; then
+            ( cd "$LITELLM_DIR" && sudo docker compose up -d litellm ) 2>&1 | tail -1
+            for _ in $(seq 1 40); do
+                curl -sf localhost:4000/health/liveliness >/dev/null 2>&1 && break; sleep 2
+            done
+        else
+            ok "skipped: no $LAB_KEY_FILE yet -- run: lab install"
+        fi
     fi
 
     say "$((n++))/$total  checks"
@@ -332,8 +402,8 @@ cmd_up() {
     if [ "$HAS_COMPOSE" = 1 ]; then
         ok "prometheus up     : $(curl -s 'localhost:9090/api/v1/query?query=up' >/dev/null 2>&1 && echo yes || echo no)"
         ok "grafana           : $(curl -s localhost:3000/api/health 2>/dev/null | python3 -c 'import json,sys;print(json.load(sys.stdin)["database"])' 2>/dev/null || echo '(not ready)')"
-        ok "litellm           : $(curl -s localhost:4000/health/liveliness >/dev/null 2>&1 && echo alive || echo '(not ready)')"
     fi
+    ok "litellm           : $(curl -s localhost:4000/health/liveliness >/dev/null 2>&1 && echo alive || echo '(not ready)')"
 
     # Both nodes. The desktop especially: LiteLLM publishes qwen3-embed with an
     # api_base of lab-laptop, so an all-green front door here can still be
@@ -392,14 +462,15 @@ cmd_down() {
         esac
     done
 
-    # Not the same arithmetic as cmd_up: here the compose guard wraps two numbered
-    # steps (LiteLLM first, monitoring last), so without compose there is exactly one.
+    # Not the same arithmetic as cmd_up: LiteLLM runs on both nodes and comes
+    # first, monitoring only on the desktop and last, and --gpu-only skips both.
     local n=1 total=1
-    [ "$HAS_COMPOSE" = 1 ] && [ "$gpu_only" = 0 ] && total=3
+    [ "$gpu_only" = 0 ] && total=$(( HAS_COMPOSE ? 3 : 2 ))
 
-    if [ "$HAS_COMPOSE" = 1 ] && [ "$gpu_only" = 0 ]; then
+    if [ "$gpu_only" = 0 ]; then
         say "$((n++))/$total  LiteLLM (stop accepting new work first)"
-        ( cd "$COMPOSE_DIR" && sudo docker compose stop litellm ) 2>&1 | tail -1
+        # The laptop's may never have been started (no key file yet).
+        ( cd "$LITELLM_DIR" && sudo docker compose stop litellm ) 2>&1 | tail -1 || true
     fi
 
     say "$((n++))/$total  llama-swap + any loaded model"
@@ -414,8 +485,14 @@ cmd_down() {
     # ray-head/ray-worker are in this list because without them the sweep was a
     # lie: a pooled run holds ~20 GiB, matched none of the patterns, and the only
     # symptom was the unexplained "GPU still holds N MiB" warning below.
-    for c in $(sudo docker ps --format '{{.Names}}' | grep -E '^(qwen3-|gpu-lab-kernels$|gpu-lab-training$|ray-head$|ray-worker$)' || true); do
+    for c in $(sudo docker ps --format '{{.Names}}' | grep -E '^(qwen3-|gpu-lab-kernels$|gpu-lab-training$|gpu-lab-agent$|ray-head$|ray-worker$)' || true); do
         case "$c" in
+            "$AGENT_CONTAINER")
+                # Stopped, not removed: 'lab logs agent' keeps its log until
+                # the next 'lab up agent' replaces it.
+                ok "stopping the agent model: $c"
+                sudo docker stop "$c" >/dev/null || true
+                ;;
             ray-head|ray-worker)
                 # Removed rather than stopped: these are named singletons, and a
                 # merely-stopped ray-head fails the next "lab pool up" on "name
@@ -475,16 +552,19 @@ cmd_down() {
 import sys,yaml
 try:
     cfg=yaml.safe_load(open('$REPO/serving/litellm-config.yaml'))
-    # Not the pool: 'lab up' never brings it back; 'lab pool up' does.
+    # Not the pool or the agent: 'lab up' brings neither back ('lab pool up'
+    # and 'lab up agent' do), and the agent falls back to the peer's card.
     here=[m['model_name'] for m in cfg.get('model_list',[])
           if ':$POOL_PORT' not in str(m.get('litellm_params',{}).get('api_base',''))
+          and ':$AGENT_PORT' not in str(m.get('litellm_params',{}).get('api_base',''))
           and ('127.0.0.1' in str(m.get('litellm_params',{}).get('api_base',''))
           or '$DESKTOP_HOST' in str(m.get('litellm_params',{}).get('api_base','')))]
     print(', '.join(here) or '(none)')
 except Exception: print('(could not read litellm config)')
 " 2>/dev/null)"
         else
-            ok "this node's models are stopped; it has no front door of its own."
+            ok "this node's models are stopped; its LiteLLM still routes the agent"
+            ok "model to the desktop's card, if that one serves it."
         fi
         say "down --gpu-only ($NODE). the card is free; routing is untouched."
     else
@@ -833,6 +913,171 @@ cmd_pool() {
     esac
 }
 
+# ---- lab up agent ----
+# How much of the card to ask vLLM for: pool_fits' arithmetic and gaps, but an
+# unset AGENT_GPU_UTIL is answered with the most that fits rather than refused,
+# because the laptop's display holds a share of the card that moves with what
+# is on screen. Sets AGENT_UTIL_RUN; says why and returns 1 when a figure that
+# was asked for does not fit.
+agent_fit() {
+    local total=$1 used=$2 free most
+    free=$(( total - used - POOL_VLLM_FREE_GAP_MIB ))
+    most=$(awk -v f="$free" -v t="$total" -v g="$POOL_VLLM_TOTAL_GAP_MIB" \
+             'BEGIN{u = int(f / (t - g) * 100) / 100; printf "%.2f", (u > 0 ? u : 0)}')
+    if [ -z "$AGENT_GPU_UTIL" ]; then
+        AGENT_UTIL_RUN=$(awk -v m="$most" 'BEGIN{printf "%.2f", (m > 0.92 ? 0.92 : m)}')
+        ok "card: $used of $total MiB in use; vLLM will find $free MiB free -> $AGENT_UTIL_RUN"
+        return 0
+    fi
+    if awk -v a="$AGENT_GPU_UTIL" -v m="$most" 'BEGIN{exit !(a > m)}'; then
+        echo "  --gpu-memory-utilization $AGENT_GPU_UTIL does not fit: vLLM will find $free MiB" >&2
+        echo "      free (of $total MiB), which is $most of the card. It would OOM at startup." >&2
+        echo "      close what is using the card, or leave AGENT_GPU_UTIL unset." >&2
+        return 1
+    fi
+    AGENT_UTIL_RUN=$AGENT_GPU_UTIL
+    ok "card: $used of $total MiB in use; $AGENT_UTIL_RUN asked for, $most would fit"
+}
+
+# curl with the lab key, which never reaches a command line: printf is a
+# builtin, and curl reads the header from the pipe.
+agent_curl() {
+    local key
+    key=$(sudo sed -n 's/^LITELLM_MASTER_KEY=//p' "$LAB_KEY_FILE")
+    curl -s -m5 -H @<(printf 'Authorization: Bearer %s\n' "$key") "$@"
+}
+
+agent_up() {
+    local n=1 steps=5
+
+    say "$((n++))/$steps  preflight"
+    if ! sudo test -s "$LAB_KEY_FILE"; then
+        echo "  $LAB_KEY_FILE is missing, and the agent's API key comes from it." >&2
+        [ "$NODE" = laptop ] && echo "    $REPO/bin/lab install    (copies the desktop's)" >&2
+        exit 1
+    fi
+    if ! sudo docker images --format '{{.Repository}}:{{.Tag}}' | grep -qx "$AGENT_IMAGE"; then
+        echo "  $AGENT_IMAGE is not on this node:  sudo docker pull $AGENT_IMAGE" >&2
+        exit 1
+    fi
+    # Offline load (HF_HUB_OFFLINE=1): a missing revision fails minutes in,
+    # after llama-swap is down, so look for it before stopping anything.
+    local repo="models--${AGENT_MODEL//\//--}"
+    if [ ! -d "/srv/model-cache/hub/$repo/snapshots/$AGENT_REVISION" ]; then
+        echo "  $AGENT_MODEL at ${AGENT_REVISION:0:7} is not in /srv/model-cache." >&2
+        cache_is_mirror && echo "    $REPO/bin/lab mirror sync $repo" >&2
+        exit 1
+    fi
+    if [ ! -f "$AGENT_ADAPTER/adapter_config.json" ]; then
+        echo "  no adapter at $AGENT_ADAPTER" >&2
+        exit 1
+    fi
+    ok "$AGENT_IMAGE, the weights and $(basename "$AGENT_ADAPTER") are here"
+    if sudo docker ps --format '{{.Names}}' | grep -qE '^ray-(head|worker)$'; then
+        echo "  the pool is holding this card. stop it first, from the laptop:" >&2
+        echo "    $REPO/bin/lab pool down" >&2
+        exit 1
+    fi
+    if sudo docker ps --format '{{.Names}}' | grep -qE '^gpu-lab-(kernels|training)$'; then
+        echo "  a kernel or training run holds this card, and the agent model needs all of it." >&2
+        exit 1
+    fi
+    ok "no pool, kernel or training run in the way"
+    # As in cmd_up: the exporter watches whatever holds the card.
+    sudo systemctl start gpu-exporter 2>/dev/null || true
+
+    say "$((n++))/$steps  stopping llama-swap (the agent model takes the whole card)"
+    local was total_mib
+    was=$(sudo systemctl is-active llama-swap || true)
+    sudo systemctl stop llama-swap || true
+    ok "llama-swap: $(sudo systemctl is-active llama-swap || true)"
+    for c in $(sudo docker ps --format '{{.Names}}' | grep '^qwen3-' || true); do
+        ok "stopping loaded model: $c"
+        sudo docker stop "$c" >/dev/null || true
+    done
+    # The previous run's container, kept for its log; running, it is replaced.
+    if sudo docker ps -a --format '{{.Names}}' | grep -qx "$AGENT_CONTAINER"; then
+        ok "removing the previous $AGENT_CONTAINER"
+        sudo docker rm -f "$AGENT_CONTAINER" >/dev/null || true
+    fi
+    wait_gpu_clear || ok "WARNING: $(gpu_used_mib) MiB still in use after 60 s"
+    total_mib=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1)
+    if ! agent_fit "$total_mib" "$(gpu_used_mib)"; then
+        [ "$was" = active ] && sudo systemctl start llama-swap
+        ok "llama-swap: $(sudo systemctl is-active llama-swap || true), as found"
+        exit 1
+    fi
+
+    say "$((n++))/$steps  vllm serve $AGENT_NAME + $AGENT_LORA_NAME"
+    # Every interface, not the direct link's address: that address leaves the
+    # NIC whenever the peer is off (host/README.md), and a port bound to it at
+    # start stays deaf when the link comes back -- which would break the peer's
+    # fallback without a sound. So the port is on Wi-Fi too, and the lab key
+    # closes it: vLLM reads VLLM_API_KEY, exported from the env file inside the
+    # container so the key is on no command line. /health needs no key.
+    #
+    # Two names, one engine: $AGENT_NAME is the base and $AGENT_LORA_NAME the
+    # adapter on it, picked per request. The target modules are the adapter's
+    # (its regex covers mixer q/k/v/o/in_proj and the shared experts' up/down);
+    # vLLM's default list is wider and costs ~1 GiB of KV for nothing.
+    # qwen3_coder because that is the call format G6u was trained on, and
+    # nemotron_v3 splits the think block out; "reasoning": {"effort": "none"}
+    # (or chat_template_kwargs enable_thinking false) turns thinking off.
+    # No restart policy and no --rm: a crashed engine stays down and keeps its
+    # log for 'lab logs agent' until the next 'lab up agent'.
+    # shellcheck disable=SC2086  -- the flag variables are word lists
+    sudo docker run -d --name "$AGENT_CONTAINER" --gpus all --ipc=host \
+        -p "$AGENT_PORT:8000" --env-file "$LAB_KEY_FILE" \
+        -v /srv/model-cache:/hf:ro -v "$AGENT_ADAPTER":/adapter:ro \
+        -e HF_HOME=/hf -e HF_HUB_OFFLINE=1 -e DO_NOT_TRACK=1 \
+        --pull never --entrypoint sh "$AGENT_IMAGE" \
+        -c 'export VLLM_API_KEY="$LITELLM_MASTER_KEY"; exec vllm serve "$@"' sh \
+        --model "$AGENT_MODEL" --revision "$AGENT_REVISION" --served-model-name "$AGENT_NAME" \
+        --enable-lora --max-lora-rank 16 --max-loras 1 --lora-modules "$AGENT_LORA_NAME=/adapter" \
+        --lora-target-modules q_proj k_proj v_proj o_proj in_proj up_proj down_proj \
+        --kv-cache-dtype fp8 --mamba-cache-mode align --moe-backend marlin $AGENT_NODE_FLAGS \
+        --max-model-len "$AGENT_MAXLEN" --max-num-seqs "$AGENT_SEQS" \
+        --gpu-memory-utilization "$AGENT_UTIL_RUN" \
+        --enable-auto-tool-choice --tool-call-parser qwen3_coder --reasoning-parser nemotron_v3 \
+        --enable-prompt-tokens-details $AGENT_EXTRA_FLAGS >/dev/null
+    ok "launched; log: $REPO/bin/lab logs agent"
+
+    say "$((n++))/$steps  waiting for the endpoint (weights, then CUDA graphs: a few minutes)"
+    local t0=$SECONDS served=0 log
+    for _ in $(seq 1 $(( AGENT_WAIT_SECS / 5 ))); do
+        curl -sf -m3 "localhost:$AGENT_PORT/health" >/dev/null 2>&1 && { served=1; break; }
+        if [ "$(sudo docker inspect -f '{{.State.Running}}' "$AGENT_CONTAINER" 2>/dev/null)" != true ]; then
+            echo "  vLLM exited after $(( SECONDS - t0 ))s without serving. The log ends:" >&2
+            sudo docker logs --tail 4 "$AGENT_CONTAINER" 2>&1 | cut -c1-240 | sed 's/^/    /' >&2
+            echo "  llama-swap stays stopped; 'lab up' brings it back." >&2
+            exit 1
+        fi
+        sleep 5
+    done
+    if [ "$served" = 0 ]; then
+        echo "  no answer on :$AGENT_PORT within ${AGENT_WAIT_SECS}s; still starting? $REPO/bin/lab logs agent" >&2
+        exit 1
+    fi
+    log=$(sudo docker logs "$AGENT_CONTAINER" 2>&1)
+    ok "ready in $(( SECONDS - t0 ))s"
+    ok "models : $(agent_curl "localhost:$AGENT_PORT/v1/models" | python3 -c 'import json,sys;print(*[m["id"] for m in json.load(sys.stdin)["data"]])' 2>/dev/null || echo '(unreadable: is the key right?)')"
+    ok "context: $(grep -oE 'Auto-fit max_model_len: [^(]*|full model context length [0-9]+ fits[^.]*' <<< "$log" | tail -1 || true) (max-model-len $AGENT_MAXLEN)"
+    ok "KV     : $(grep -oE 'GPU KV cache size: [0-9,]+ tokens' <<< "$log" | tail -1 || echo '?'), $AGENT_SEQS seqs"
+    ok "card   : $(gpu_used_mib) MiB in use"
+
+    say "$((n++))/$steps  front door"
+    if [ -f "$LITELLM_DIR/docker-compose.yml" ]; then
+        ( cd "$LITELLM_DIR" && sudo docker compose up -d litellm ) 2>&1 | tail -1
+        for _ in $(seq 1 40); do
+            curl -sf localhost:4000/health/liveliness >/dev/null 2>&1 && break; sleep 2
+        done
+        ok "litellm: $(curl -sf localhost:4000/health/liveliness >/dev/null 2>&1 && echo alive || echo '(not ready)')"
+    fi
+    say "agent up ($NODE). model \"agent\" at http://localhost:4000/v1 (lab key)"
+    ok "direct: http://localhost:$AGENT_PORT/v1 as $AGENT_LORA_NAME or $AGENT_NAME (same key)"
+    ok "llama-swap is stopped here; 'lab down --gpu-only' then 'lab up' restores it."
+}
+
 cmd_status() {
     say "node"
     ok "$NODE  ($(hostname), $(nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader 2>/dev/null || echo 'no GPU'))"
@@ -840,8 +1085,9 @@ cmd_status() {
     # Read once, used three times below. A pooled card explains a stopped
     # llama-swap, an otherwise anomalous GPU figure, and a DOWN endpoint -- and
     # without it all three read as faults.
-    local pooled
+    local pooled agent
     pooled=$(sudo docker ps --format '{{.Names}}' | grep -E '^ray-(head|worker)$' || true)
+    agent=$(sudo docker ps --format '{{.Names}}' | grep -x "$AGENT_CONTAINER" || true)
 
     say "services"
     if sudo systemctl cat llama-swap >/dev/null 2>&1; then
@@ -854,6 +1100,8 @@ cmd_status() {
     ok "llama-swap : ${sv:-unknown}"
     if [ -n "$pooled" ] && [ "$sv" != active ]; then
         ok "             not a fault -- the pool ($pooled) holds this card"
+    elif [ -n "$agent" ] && [ "$sv" != active ]; then
+        ok "             not a fault -- the agent model holds this card"
     fi
     if sudo systemctl cat gpu-exporter >/dev/null 2>&1; then
         gx=$(sudo systemctl is-active gpu-exporter 2>/dev/null || true)
@@ -865,7 +1113,8 @@ cmd_status() {
     if [ "$HAS_COMPOSE" = 1 ]; then
         ( cd "$COMPOSE_DIR" && sudo docker compose ps --format '  {{.Name}}: {{.State}}' ) 2>/dev/null || true
     else
-        ok "(no compose stack on this node -- LiteLLM/Prometheus/Grafana run on the desktop)"
+        ( cd "$LITELLM_DIR" && sudo docker compose ps --format '  {{.Name}}: {{.State}} (the agent model only)' ) 2>/dev/null || true
+        ok "(Prometheus/Grafana and the full LiteLLM run on the desktop)"
     fi
 
     say "models"
@@ -883,6 +1132,9 @@ cmd_status() {
     # for it is the most confusing thing this command can print.
     if [ -n "$pooled" ]; then
         sudo docker ps --format 'pooled:     {{.Names}} ({{.Status}})' | grep -E 'ray-(head|worker)' | sed 's/^/  /' || true
+    fi
+    if [ -n "$agent" ]; then
+        sudo docker ps --format 'agent:      {{.Names}} ({{.Status}})' | grep -x "agent:      $AGENT_CONTAINER.*" | sed 's/^/  /' || true
     fi
 
     say "gpu"
@@ -916,8 +1168,13 @@ cmd_status() {
     if [ "$HAS_COMPOSE" = 1 ]; then
         endpoints="$endpoints
 prometheus http://localhost:9090/-/healthy
-grafana    http://localhost:3000/api/health
+grafana    http://localhost:3000/api/health"
+    fi
+    endpoints="$endpoints
 litellm    http://localhost:4000/health/liveliness"
+    if [ -n "$agent" ]; then
+        endpoints="$endpoints
+agent      http://localhost:$AGENT_PORT/health"
     fi
     # Always the desktop's address: ray-head runs the OpenAI server for the whole
     # pool, so the laptop contributes a card without ever serving the endpoint.
@@ -1002,6 +1259,23 @@ cmd_install() {
         ok "daemon-reloaded"
     fi
 
+    # The laptop's LiteLLM and agent model use the desktop's key, so that one
+    # key opens both nodes' endpoints and either can be the other's fallback.
+    # Copied, never written into the repo: the repo is public.
+    if [ "$NODE" = laptop ] && ! sudo test -s "$LAB_KEY_FILE"; then
+        say "lab key ($LAB_KEY_FILE)"
+        local keytmp
+        keytmp=$(mktemp)
+        if on_desktop "sudo cat $LAB_KEY_FILE" > "$keytmp" 2>/dev/null && grep -q '^LITELLM_MASTER_KEY=' "$keytmp"; then
+            sudo install -d -m 0755 "$(dirname "$LAB_KEY_FILE")"
+            sudo install -m 0600 -o root -g root "$keytmp" "$LAB_KEY_FILE"
+            ok "copied from the desktop (root, 0600)"
+        else
+            ok "skipped: could not read it from the desktop (ssh llm down?)"
+        fi
+        rm -f "$keytmp"
+    fi
+
     # The link's names (see DESKTOP_HOST above). Rewritten in place, so a
     # renumbered link is picked up by running install again. LiteLLM and
     # Prometheus run with host networking and get a copy of /etc/hosts when
@@ -1043,7 +1317,8 @@ cmd_reload() {
         for svc in $want; do
             case "$svc" in
                 llama-swap) restart_swap=1 ;;
-                prometheus|grafana|litellm)
+                litellm) compose_svcs="$compose_svcs $svc" ;;
+                prometheus|grafana)
                     if [ "$HAS_COMPOSE" = 1 ]; then
                         compose_svcs="$compose_svcs $svc"
                     else
@@ -1072,10 +1347,12 @@ cmd_reload() {
         #            so a moved path would be silently ignored.
         # A repo restructure changes the spec; an edited prometheus.yml changes
         # only contents. This command has to cover both.
+        # LITELLM_DIR is COMPOSE_DIR on the desktop, and the only stack on
+        # the laptop, where litellm is all a reload can name.
         # shellcheck disable=SC2086  -- deliberate word splitting into compose
-        ( cd "$COMPOSE_DIR" && sudo docker compose up -d $compose_svcs ) 2>&1 | tail -3
+        ( cd "$LITELLM_DIR" && sudo docker compose up -d $compose_svcs ) 2>&1 | tail -3
         # shellcheck disable=SC2086
-        ( cd "$COMPOSE_DIR" && sudo docker compose restart $compose_svcs ) 2>&1 | tail -3
+        ( cd "$LITELLM_DIR" && sudo docker compose restart $compose_svcs ) 2>&1 | tail -3
     fi
     say "reloaded ($NODE)."
 }
@@ -1450,19 +1727,21 @@ cmd_logs() {
             else
                 on_desktop 'sudo docker exec ray-head tail -f /tmp/vllm-pool.log'
             fi ;;
-        litellm|prometheus|grafana)
+        agent)      sudo docker logs -f "$AGENT_CONTAINER" ;;
+        litellm)    ( cd "$LITELLM_DIR" && sudo docker compose logs -f litellm ) ;;
+        prometheus|grafana)
             if [ "$HAS_COMPOSE" = 1 ]; then
                 ( cd "$COMPOSE_DIR" && sudo docker compose logs -f "$1" )
             else
                 echo "$1 runs on the desktop, not here: ssh llm '$REPO/bin/lab logs $1'" >&2; exit 1
             fi ;;
         mirror)     tail -F "$MIRROR_STATE/sync.log" ;;
-        *) echo "usage: lab logs <llama-swap|model|pool|litellm|prometheus|grafana|mirror>" >&2; exit 1 ;;
+        *) echo "usage: lab logs <llama-swap|model|agent|pool|litellm|prometheus|grafana|mirror>" >&2; exit 1 ;;
     esac
 }
 
 case "${1:-}" in
-    up)     shift; cmd_up "${1:-}" ;;
+    up)     shift; if [ "${1:-}" = agent ]; then agent_up; else cmd_up "${1:-}"; fi ;;
     down)   shift; cmd_down "$@" ;;
     pool)   shift; cmd_pool "${1:-}" ;;
     status) cmd_status ;;
