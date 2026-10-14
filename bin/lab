@@ -132,8 +132,11 @@ AGENT_CONTAINER=gpu-lab-agent
 AGENT_PORT=8300
 # The same on both nodes, and that is the point: LiteLLM falls back to the
 # peer mid-conversation, and a peer with a shorter context would reject what
-# the local card accepted. Measured with AGENT_MAXLEN=-1, which makes vLLM
-# fit the longest single sequence its KV cache holds (see AGENT_MAXLEN_NOTE).
+# the local card accepted. AGENT_MAXLEN=-1 makes vLLM fit the longest one
+# sequence its KV holds; on 2026-10-09 that was 739,152 tokens on the idle
+# desktop and 225,504 on the laptop with 1.9 GiB taken by other apps. KV is
+# ~0.3M tokens per GiB, so the laptop's figure moves with every window it
+# opens: 131072 needs ~0.4 GiB and still starts with ~0.3 GiB more on screen.
 AGENT_MAXLEN=${AGENT_MAXLEN:-131072}
 AGENT_SEQS=${AGENT_SEQS:-16}
 # Empty means the most the card can give right now, capped at 0.92 (what the
@@ -1023,6 +1026,9 @@ agent_up() {
     # qwen3_coder because that is the call format G6u was trained on, and
     # nemotron_v3 splits the think block out; "reasoning": {"effort": "none"}
     # (or chat_template_kwargs enable_thinking false) turns thinking off.
+    # With it on, G6u may still close the think block at once (moe-qlora
+    # docs/lightning-training.md: it reasons on 555 of 994 such turns), so an
+    # empty reasoning field from it is the adapter, not the parser.
     # No restart policy and no --rm: a crashed engine stays down and keeps its
     # log for 'lab logs agent' until the next 'lab up agent'.
     # shellcheck disable=SC2086  -- the flag variables are word lists
@@ -1061,7 +1067,7 @@ agent_up() {
     log=$(sudo docker logs "$AGENT_CONTAINER" 2>&1)
     ok "ready in $(( SECONDS - t0 ))s"
     ok "models : $(agent_curl "localhost:$AGENT_PORT/v1/models" | python3 -c 'import json,sys;print(*[m["id"] for m in json.load(sys.stdin)["data"]])' 2>/dev/null || echo '(unreadable: is the key right?)')"
-    ok "context: $(grep -oE 'Auto-fit max_model_len: [^(]*|full model context length [0-9]+ fits[^.]*' <<< "$log" | tail -1 || true) (max-model-len $AGENT_MAXLEN)"
+    ok "context: $(grep -oE 'Auto-fit max_model_len: [^(]*|full model context length [0-9]+ fits[^.]*|Maximum concurrency for [0-9,]+ tokens per request: [0-9.]+x' <<< "$log" | paste -sd';' || true) (max-model-len $AGENT_MAXLEN)"
     ok "KV     : $(grep -oE 'GPU KV cache size: [0-9,]+ tokens' <<< "$log" | tail -1 || echo '?'), $AGENT_SEQS seqs"
     ok "card   : $(gpu_used_mib) MiB in use"
 
