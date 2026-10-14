@@ -151,6 +151,20 @@ AGENT_EXTRA_FLAGS=${AGENT_EXTRA_FLAGS:-}
 # takes the same value as its API key (agent_up says why it needs one). Not
 # in git; on the laptop, 'lab install' copies the desktop's.
 LAB_KEY_FILE=/etc/gpu-lab/litellm.env
+
+# ---- the shell a sealed-set run gets (bench/agent_ab.py) ----
+# Every command either harness runs goes through Codex's bwrap sandbox, and
+# bench/agent_ab_bwrap.sh switches it to this user first. Opening 1 showed why
+# a uid of its own is the wall that matters: a shell with the lab user's uid
+# reaches what that uid reaches, so one run removed the serving container over
+# the docker socket (group docker) and another signalled a service by pid. Both
+# are uid checks in the kernel. This user has no groups, no home and no login
+# shell, and owns nothing but the run's workspace, handed over for the run.
+AGENT_USER=labagent
+# What it must read and may not write: the bwrap shim and Codex's homes. The
+# lab user's ~/.cache is 0700, so they cannot live there. 'lab install' makes
+# this (root does), and agent_ab.py refuses to start without it.
+AGENT_STATE=/var/lib/agentab
 # The direct link's addresses are not written in this repo, which is public.
 # 'lab install' derives them from the link NIC's /30 (the desktop holds the
 # lower host address) and records them in /etc/hosts as lab-desktop and
@@ -1194,6 +1208,25 @@ pooled     http://$DESKTOP_ADDR:$POOL_PORT/v1/models"
         if curl -sf "$addr" >/dev/null 2>&1; then ok "$name OK"; else ok "$name DOWN"; fi
     done <<< "$endpoints"
 
+    # Not a service, but the same question: has install run on this node? A
+    # sealed-set run refuses to start without all three (bench/agent_ab.py).
+    say "sealed-run sandbox"
+    if id -u "$AGENT_USER" >/dev/null 2>&1; then
+        ok "$AGENT_USER uid $(id -u "$AGENT_USER"), groups: $(id -nG "$AGENT_USER")"
+    else
+        ok "$AGENT_USER missing -- run 'lab install'"
+    fi
+    if [ -d "$AGENT_STATE" ]; then
+        ok "$AGENT_STATE $(stat -c '%a %U' "$AGENT_STATE")"
+    else
+        ok "$AGENT_STATE missing -- run 'lab install'"
+    fi
+    if getfacl -pc "$HOME" 2>/dev/null | grep -q "^user:$AGENT_USER:..x"; then
+        ok "$HOME $(stat -c %a "$HOME") + $AGENT_USER traverse: it can reach codex and $REPO"
+    else
+        ok "$HOME $(stat -c %a "$HOME"), no traverse for $AGENT_USER -- run 'lab install'"
+    fi
+
     # Last, because it is the slow part (an ssh dry run), and in an || so a
     # failure inside it cannot end status early under set -e.
     if [ "$NODE" = laptop ] && [ -d "$MIRROR" ]; then
@@ -1280,6 +1313,45 @@ cmd_install() {
             ok "skipped: could not read it from the desktop (ssh llm down?)"
         fi
         rm -f "$keytmp"
+    fi
+
+    # The user bench/agent_ab.py's sandboxed shells run as (see AGENT_USER
+    # above), the directory it reads, and the one permission it needs on this
+    # account: traverse $HOME, granted to that uid alone by ACL, so it can
+    # reach ~/.local/bin/codex (Codex re-execs that path inside the sandbox)
+    # and this repo, while ~/.ssh and ~/sealed stay 0700 and the hidden-path
+    # mounts stay as they are. 'agent_ab.py preflight' proves each wall from
+    # inside the sandbox.
+    say "sealed-run sandbox user ($AGENT_USER)"
+    if id -u "$AGENT_USER" >/dev/null 2>&1; then
+        ok "already there (uid $(id -u "$AGENT_USER"))"
+    else
+        sudo useradd --system --no-create-home --home-dir /nonexistent \
+            --shell /usr/sbin/nologin --comment "gpu-lab sealed-run sandbox" "$AGENT_USER"
+        ok "created (uid $(id -u "$AGENT_USER")): no home, no login shell"
+    fi
+    # A group is the one thing that hands back what the uid closes, which is
+    # how the docker socket was reachable in the first place.
+    local extra
+    extra=$(id -nG "$AGENT_USER" | tr ' ' '\n' | grep -vx "$AGENT_USER" | tr '\n' ' ' || true)
+    if [ -n "$extra" ]; then
+        ok "WARNING in groups: $extra -- a group can reopen what the uid closes"
+    fi
+    sudo install -d -o "$(id -un)" -g "$(id -gn)" -m 0755 "$AGENT_STATE"
+    ok "$AGENT_STATE 0755 $(id -un): that user reads it, only you write it"
+    # The one thing that user needs from this account: traverse $HOME, because
+    # Codex re-execs $HOME/.local/bin/codex inside the sandbox and a task may
+    # read $REPO. An ACL, not a mode change: 0751 would hand traversal to every
+    # account on the machine, while "u:$AGENT_USER:--x" hands it to one uid and
+    # grants no listing. $HOME stays 0750, and ~/.ssh and ~/sealed stay 0700 on
+    # their own, which is what keeps the set out of reach.
+    if ! command -v setfacl >/dev/null 2>&1; then
+        ok "WARNING no setfacl ('apt install acl'): a sealed run cannot reach codex"
+    elif getfacl -pc "$HOME" 2>/dev/null | grep -q "^user:$AGENT_USER:..x"; then
+        ok "$HOME $(stat -c %a "$HOME"): $AGENT_USER may traverse it (ACL)"
+    else
+        sudo setfacl -m "u:$AGENT_USER:--x" "$HOME"
+        ok "$HOME $(stat -c %a "$HOME"): granted $AGENT_USER traverse (ACL --x, no listing)"
     fi
 
     # The link's names (see DESKTOP_HOST above). Rewritten in place, so a

@@ -18,8 +18,10 @@ Every command either harness runs goes through Codex's Linux sandbox
 and a /tmp of its own. agent_ab_bwrap.sh stands in for bwrap so the shell
 sees the real machine (GPU nodes, host pids and /proc) but not the set, the
 results or ssh keys. Every run uses the same cwd, so nothing in the context
-names the task or the arm. Docker stays reachable, as tasks may need its
-logs, so the model server's health is checked before and after each run.
+names the task or the arm. The shell runs as its own uid (--agent-user), which
+closes what opening 1 found open: the docker socket (group docker) and signals
+to the lab user's services. `preflight` asserts that from inside the sandbox,
+and the model server's health is still checked before and after each run.
 Neither harness sets sampling: both get the server's defaults (Lightning's
 generation_config: temperature 1.0, top_p 0.95).
 
@@ -27,11 +29,12 @@ The runner prints task id, arm and verdict only, never a prompt, answer or
 FAIL reason: those land in --out, and reading them is part of opening the
 set. Record every opening in the set's OPENINGS.md.
 
+  agent_ab.py preflight            # the sandbox's walls, without opening the set
   agent_ab.py selftest --set DIR --out DIR --tag before
   agent_ab.py run      --set DIR --out DIR --modes off,on
   agent_ab.py summary  --out DIR
 """
-import argparse, json, math, os, random, shutil, signal, subprocess, sys, time, urllib.error, urllib.request
+import argparse, json, math, os, pwd, random, shutil, signal, subprocess, sys, time, urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "training"))
@@ -42,19 +45,24 @@ MODELS = {"g6u": "lightning-g6u", "base": "lightning"}
 HARNESSES = ("codex", "loop")
 WORK = "/tmp/agentab/work"      # the one cwd every run sees
 TMP = "/tmp/agentab/tmp"        # the sandbox's /tmp, emptied between runs
-# Read-only inside the sandbox. Codex passes over a bwrap on PATH that the
-# sandbox could write (the workspace, /tmp) and uses the system one, which
-# hides nothing, so the shim must not live there.
-SHIM = os.path.expanduser("~/.cache/agentab/shim")
+# One directory for everything the sandbox reads but may not write, and the
+# agent user must read some of it, so it cannot be the lab user's ~/.cache
+# (0700). bin/lab install makes it, owned by the lab user, 0755.
+STATE = "/var/lib/agentab"
+# Codex passes over a bwrap on PATH that the sandbox could write (the
+# workspace, /tmp) and uses the system one, which hides nothing, so the shim
+# must not live in either.
+SHIM = STATE + "/shim"
 # Codex's home: one fixed path, recreated per run, so nothing on PATH (its
 # apply_patch helper lives here) names a task or an arm. It must stay outside
 # the hidden paths, or that helper disappears.
-CODEX_HOME = os.path.expanduser("~/.cache/agentab/codex-home")
-SANDBOX_HOME = os.path.expanduser("~/.cache/agentab/sandbox-home")  # the loop's "codex sandbox"
+CODEX_HOME = STATE + "/codex-home"
+SANDBOX_HOME = STATE + "/sandbox-home"  # the loop's "codex sandbox"
 OUT_CAP = 20000                 # characters of command output the loop returns, head and tail
 CMD_TIMEOUT = 120               # seconds per command in the loop
 MAX_CALLS = 60                  # loop tool calls per run; Codex has no such limit, only the task timeout
 CODEX = "codex"                 # set from --codex
+AGENT_USER = "labagent"         # set from --agent-user: the user every sandboxed shell runs as
 SECRETS = ("KEY", "SECRET", "TOKEN")  # env names the loop's shell drops; codex_config() makes Codex drop them too
 
 
@@ -63,8 +71,27 @@ def lab_key():
                           capture_output=True, text=True, check=True).stdout.strip()
 
 
+def state_dir():
+    """Where the shim and Codex's homes live, made by bin/lab install because
+    it takes root: /var/lib, so both users can read it and only one can write."""
+    if not os.path.isdir(STATE):
+        sys.exit(f"no {STATE}: run 'bin/lab install' on this node first")
+    return STATE
+
+
+def agent_uid():
+    """The uid of the user the sandboxed shell runs as, and proof it exists."""
+    p = subprocess.run(["id", "-u", "--", AGENT_USER], capture_output=True, text=True)
+    if p.returncode:
+        sys.exit(f"no user {AGENT_USER!r}: run 'bin/lab install' on this node first")
+    return int(p.stdout.strip())
+
+
 def sandbox_env(a):
     """Environment for Codex and for the loop's sandboxed shell."""
+    state_dir()
+    if agent_uid() == os.getuid():
+        sys.exit(f"{AGENT_USER!r} is the user running this: the shell needs a uid of its own")
     os.makedirs(SHIM, exist_ok=True)
     shim = os.path.join(SHIM, "bwrap")  # a copy: Codex runs a link's target, far from the lists
     if os.path.lexists(shim):
@@ -76,24 +103,71 @@ def sandbox_env(a):
         f.write("".join(p + "\n" for p in hide))
     with open(os.path.join(SHIM, "tmp"), "w") as f:
         f.write(TMP)
+    with open(os.path.join(SHIM, "user"), "w") as f:
+        f.write(AGENT_USER + "\n")
     os.makedirs(SANDBOX_HOME, exist_ok=True)
     return dict(os.environ, PATH=SHIM + ":" + os.environ["PATH"], CODEX_HOME=SANDBOX_HOME)
 
 
 def preflight(env):
-    """Refuse to start unless a sandboxed command finds the hidden paths empty and
-    /tmp private. When Codex passes the wrapper over, it says nothing."""
+    """Refuse to start unless one sandboxed command shows every wall standing:
+    the hidden paths empty, /tmp private, a uid of its own, no key in its
+    environment, the container socket shut, the lab user's processes and their
+    environments beyond reach -- and the machine the sealed set promises still
+    visible, host pids and GPUs. When Codex passes the wrapper over, every uid
+    check fails loudly here instead of mid-run."""
     hide = open(os.path.join(SHIM, "hide")).read().split() + [SHIM]
     probe = "/tmp/agentab-preflight"
+    want = agent_uid()
     fresh_work("")
-    out = run_cmd(f'for p in {" ".join(hide)}; do n=$(ls -A "$p" | wc -l); '  # counts, never names
-                  f'[ "$n" = 0 ] || echo "seen $p: $n entries"; done; touch {probe}', env, 60)
+    out = run_cmd(f'for p in {" ".join(hide)}; do n=$(ls -A "$p" 2>/dev/null | wc -l); '  # counts, never names
+                  f'[ "$n" = 0 ] || echo "seen $p: $n entries"; done; touch {probe} 2>/dev/null; '
+                  f'echo "uid=$(id -u)"; '
+                  f'if [ ! -S /run/docker.sock ]; then echo socket=absent; '
+                  f'elif ! command -v docker >/dev/null; then echo socket=noclient; '
+                  f'elif docker ps >/dev/null 2>&1; then echo socket=open; else echo socket=shut; fi; '
+                  f'kill -0 {os.getpid()} 2>/dev/null && echo runner=reachable || echo runner=separate; '
+                  f'echo "secrets=$(env | grep -Eic "KEY|SECRET|TOKEN" || true)"; '
+                  f'echo "runnerenv=$(cat /proc/{os.getpid()}/environ 2>/dev/null | wc -c)"; '
+                  f'echo "pids=$(ps -e 2>/dev/null | wc -l)"; '
+                  f'echo "gpus=$(nvidia-smi -L 2>/dev/null | wc -l)"', env, 120)
     clean()
     leaked = os.path.exists(probe)
     if leaked:
-        os.remove(probe)
-    if leaked or "\nseen " in "\n" + out or not out.endswith("[exit code 0]"):
-        sys.exit(f"preflight: the sandbox does not hide what it should\n{out}")
+        subprocess.run(["sudo", "-n", "rm", "-f", probe], check=False)  # the agent user's file, in a sticky /tmp
+    got = {}
+    for line in out.splitlines():
+        k, _, v = line.partition("=")
+        if k in ("uid", "socket", "runner", "secrets", "runnerenv", "pids", "gpus"):
+            got[k] = v.strip()
+    bad = []
+    if leaked:
+        bad.append("a write to its /tmp reached the host's")
+    if "\nseen " in "\n" + out:
+        bad.append("a hidden path is not empty")
+    if not out.endswith("[exit code 0]"):
+        bad.append("the probe did not finish")
+    if got.get("uid") != str(want):
+        bad.append(f"the shell runs as uid {got.get('uid')}, not {want} ({AGENT_USER})")
+    if got.get("socket") == "open":
+        bad.append("the container socket answers")
+    if got.get("runner") != "separate":
+        bad.append("the lab user's processes can be signalled")
+    # The wrapper carries the env across the uid change, so what it drops is
+    # worth asserting, and the key is also in the runner's own environment.
+    if int(got.get("secrets") or 0):
+        bad.append("a key, secret or token name reached the shell's environment")
+    if int(got.get("runnerenv") or 0):
+        bad.append("the runner's environment is readable")
+    if int(got.get("pids") or 0) < 20:
+        bad.append("ps cannot see the machine")      # the promised shell, not a wall
+    if int(got.get("gpus") or 0) < 1:
+        bad.append("nvidia-smi finds no GPU")
+    if bad:
+        sys.exit("preflight: " + "; ".join(bad) + f"\n{out}")
+    print(f"preflight: uid {want} ({AGENT_USER}), container socket {got['socket']}, lab user's processes "
+          f"separate, {len(hide)} paths hidden, /tmp private, no key in its environment; "
+          f"{got['pids']} host pids and {got['gpus']} GPU(s) visible")
 
 
 def healthy(a):
@@ -130,17 +204,48 @@ def codex_config(model, thinking, base):
         'wire_api = "responses"', 'env_key = "LAB_KEY"', ""])
 
 
+def wipe(d):
+    """Remove a directory, with root for whatever the agent user left in it."""
+    shutil.rmtree(d, ignore_errors=True)
+    if os.path.exists(d):
+        subprocess.run(["sudo", "-n", "rm", "-rf", d], check=True)
+
+
+def share_work():
+    """The shell runs as a uid of its own, so the workspace and the /tmp that
+    stands in for the host's are shared with that uid, not handed to it:
+    between the sandbox exiting and grading, Codex removes the mount targets
+    it made in the workspace as the runner, which a directory the runner no
+    longer owns refuses. An ACL instead, so both uids keep rwx on whatever the
+    other creates -- the default entries carry that down into new directories
+    -- while 0750 keeps the fixture off every other account on the machine."""
+    if not shutil.which("setfacl"):
+        sys.exit("no setfacl: 'apt install acl' on this node ('bin/lab install' reports it too)")
+    me = pwd.getpwuid(os.getuid()).pw_name
+    spec = ",".join(f"{d}u:{u}:rwx" for u in (me, AGENT_USER) for d in ("", "d:"))
+    for d in (WORK, TMP):
+        os.chmod(d, 0o750)
+    subprocess.run(["setfacl", "-R", "-m", spec, WORK, TMP], check=True)
+
+
 def fresh_work(fixture):
     for d in (WORK, TMP):
-        if os.path.exists(d):
-            shutil.rmtree(d)
+        wipe(d)
     os.makedirs(TMP)
     shutil.copytree(fixture, WORK, symlinks=True) if os.path.isdir(fixture) else os.makedirs(WORK)
+    share_work()
+
+
+def sweep():
+    """Nothing of the agent user outlives its run. By user, not by name: it
+    cannot match the runner, which is the point of a uid of its own."""
+    subprocess.run(["sudo", "-n", "pkill", "-9", "-u", AGENT_USER], check=False)
 
 
 def clean():
+    sweep()
     for d in (WORK, TMP):
-        shutil.rmtree(d, ignore_errors=True)
+        wipe(d)
     if os.path.isdir(os.path.dirname(WORK)) and not os.listdir(os.path.dirname(WORK)):
         os.rmdir(os.path.dirname(WORK))
 
@@ -162,7 +267,11 @@ def run_cmd(cmd, env, timeout):
     try:
         out, rc, note = p.communicate(timeout=timeout)[0], p.returncode, ""
     except subprocess.TimeoutExpired:
+        # The group kill reaches Codex and no further: the shell below it runs
+        # as another uid, in its own session, holding the pipe this waits on.
+        # Signalling it is the agent user's own business, so sweep by uid.
         os.killpg(p.pid, signal.SIGKILL)
+        sweep()
         out, rc, note = p.communicate()[0], 124, f"\n[timed out after {timeout:.0f}s]"
     out = out.decode(errors="replace")
     if len(out) > OUT_CAP:
@@ -314,6 +423,7 @@ def cmd_run(a):
                 else:
                     r = run_loop(a, key, MODELS[mshort], mode == "on", prompt, env, t0 + meta["timeout_s"])
                 secs = round(time.time() - t0, 1)
+                sweep()                   # Codex's --die-with-parent covers the usual exit, this the rest
                 if not healthy(a):  # the server died under this run: not the model's fail
                     r["status"] = "infra"
                 answer = os.path.join(rundir, "answer.txt")
@@ -385,11 +495,17 @@ def cmd_summary(a):
             print(f"{x} vs {y}: {b} vs {c} discordant of {len(common)}, exact McNemar p={mcnemar(b, c):.3f}")
 
 
+def cmd_preflight(a):
+    """The walls on their own: no task, no prompt, nothing opened."""
+    preflight(sandbox_env(a))
+
+
 def main():
+    global CODEX, AGENT_USER
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=("run", "selftest", "summary"))
+    ap.add_argument("cmd", choices=("preflight", "run", "selftest", "summary"))
     ap.add_argument("--set", default=os.path.expanduser("~/sealed/agent-v1"))
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--out", default="", help="required, except for preflight")
     ap.add_argument("--base", default="http://localhost:8300")
     ap.add_argument("--prom", default="http://lab-desktop:9090")
     ap.add_argument("--modes", default="off,on")
@@ -397,11 +513,17 @@ def main():
     ap.add_argument("--tag", default="before")
     ap.add_argument("--codex", default=shutil.which("codex") or os.path.expanduser("~/.local/bin/codex"))
     ap.add_argument("--hide", default="~/sealed:~/.ssh", help="colon-separated; the set and --out are added")
+    ap.add_argument("--agent-user", default=AGENT_USER, help="the user every sandboxed shell runs as")
     a = ap.parse_args()
-    global CODEX
-    a.base, a.set, a.out, CODEX = a.base.rstrip("/"), os.path.abspath(a.set), os.path.abspath(a.out), a.codex
+    if not a.out:
+        if a.cmd != "preflight":
+            ap.error("--out is required")
+        a.out = os.path.join(state_dir(), "preflight")  # nothing lands here; the hide list wants a path
+    a.base, a.set, a.out = a.base.rstrip("/"), os.path.abspath(a.set), os.path.abspath(a.out)
+    CODEX, AGENT_USER = a.codex, a.agent_user
     os.makedirs(a.out, exist_ok=True)
-    {"run": cmd_run, "selftest": cmd_selftest, "summary": cmd_summary}[a.cmd](a)
+    {"preflight": cmd_preflight, "run": cmd_run,
+     "selftest": cmd_selftest, "summary": cmd_summary}[a.cmd](a)
 
 
 if __name__ == "__main__":
