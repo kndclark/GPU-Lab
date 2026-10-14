@@ -32,7 +32,8 @@ set. Record every opening in the set's OPENINGS.md.
   agent_ab.py preflight            # the sandbox's walls, without opening the set
   agent_ab.py selftest --set DIR --out DIR --tag before
   agent_ab.py run      --set DIR --out DIR --modes off,on
-  agent_ab.py summary  --out DIR
+  agent_ab.py run      --set DIR --out DIR --arms codex-g6u-on,codex-base-on --reps 5
+  agent_ab.py summary  --out DIR [--arms ... --reps 5]
 """
 import argparse, json, math, os, pwd, random, shutil, signal, subprocess, sys, time, urllib.error, urllib.request
 
@@ -385,60 +386,82 @@ def task_ids(a):
     return sorted(d for d in os.listdir(root) if os.path.exists(os.path.join(root, d, "meta.json")))
 
 
-def arms(modes):
+def arms(modes, pick=""):
+    if pick:  # a settled question needs fewer arms than the enumeration
+        return [s.strip() for s in pick.split(",") if s.strip()]
     return [f"{h}-{m}-{mode}" for mode in modes for h in HARNESSES for m in MODELS]
+
+
+def plan(a):
+    """(rep, task, arm) in the order they run.
+
+    The arms of one task run back to back, with the leader rotating from task
+    to task, so live state that drifts between runs drifts inside a pair
+    rather than between arms. One pass covers every task; --reps repeats the
+    pass, reshuffled from the same stream, so a per-task verdict can be a
+    majority of several runs instead of one sample.
+    """
+    groups = [arms("", a.arms)] if a.arms else [arms([m]) for m in a.modes.split(",")]
+    rng = random.Random(a.seed)
+    for rep in range(1, a.reps + 1):
+        order = task_ids(a)
+        rng.shuffle(order)
+        for group in groups:  # all of one mode's arms before the next mode
+            for i, tid in enumerate(order):
+                for arm in group[i % len(group):] + group[:i % len(group)]:
+                    yield rep, tid, arm
 
 
 def done_keys(path):
     if not os.path.exists(path):
         return set()
-    return {(r["task"], r["arm"]) for r in map(json.loads, open(path)) if r["status"] != "infra"}
+    return {(r["task"], r["arm"], r.get("rep", 1))
+            for r in map(json.loads, open(path)) if r["status"] != "infra"}
 
 
 def cmd_run(a):
+    if a.dry:  # the order on its own: no prompt read, no model, no sandbox
+        for rep, tid, arm in plan(a):
+            print(f"rep{rep} {tid} {arm}")
+        return
     key, env = lab_key(), sandbox_env(a)
     preflight(env)
     results = os.path.join(a.out, "results.jsonl")
     done = done_keys(results)
-    order = task_ids(a)
-    random.Random(a.seed).shuffle(order)
-    for mode in a.modes.split(","):  # all of one mode before the next
-        mode_arms = arms([mode])
-        for i, tid in enumerate(order):
-            meta = json.load(open(os.path.join(a.set, "tasks", tid, "meta.json")))
-            prompt = open(os.path.join(a.set, "tasks", tid, "prompt.md")).read()
-            for arm in mode_arms[i % len(mode_arms):] + mode_arms[:i % len(mode_arms)]:
-                if (tid, arm) in done:
-                    continue
-                harness, mshort, _ = arm.split("-")
-                rundir = os.path.join(a.out, "runs", tid, arm)
-                if os.path.exists(rundir):  # an infra failure being rerun
-                    shutil.rmtree(rundir)
-                os.makedirs(rundir)
-                wait_healthy(a)
-                fresh_work(os.path.join(a.set, "tasks", tid, "fixture"))
-                t0 = time.time()
-                if harness == "codex":
-                    r = run_codex(a, key, MODELS[mshort], mode == "on", prompt, env, meta["timeout_s"], rundir)
-                else:
-                    r = run_loop(a, key, MODELS[mshort], mode == "on", prompt, env, t0 + meta["timeout_s"])
-                secs = round(time.time() - t0, 1)
-                sweep()                   # Codex's --die-with-parent covers the usual exit, this the rest
-                if not healthy(a):  # the server died under this run: not the model's fail
-                    r["status"] = "infra"
-                answer = os.path.join(rundir, "answer.txt")
-                with open(answer, "w") as f:
-                    f.write(r["final"] or "")
-                g = grade(a, tid, answer, WORK)
-                shutil.copytree(WORK, os.path.join(rundir, "ws"), symlinks=True)
-                with open(os.path.join(rundir, "run.json"), "w") as f:
-                    json.dump(dict(r, grade=g), f, indent=1)
-                row = {"task": tid, "arm": arm, "pass": g["pass"], "status": r["status"],
-                       "calls": len(r["calls"]), "secs": secs, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
-                with open(results, "a") as f:
-                    f.write(json.dumps(row) + "\n")
-                print(f"{tid} {arm:15s} {'PASS' if g['pass'] else 'FAIL'} {r['status']:9s} "
-                      f"calls={len(r['calls'])} {secs}s", flush=True)
+    for rep, tid, arm in plan(a):
+        if (tid, arm, rep) in done:
+            continue
+        meta = json.load(open(os.path.join(a.set, "tasks", tid, "meta.json")))
+        prompt = open(os.path.join(a.set, "tasks", tid, "prompt.md")).read()
+        harness, mshort, mode = arm.split("-")
+        rundir = os.path.join(a.out, "runs", tid, arm if a.reps == 1 else f"{arm}-r{rep}")
+        if os.path.exists(rundir):  # an infra failure being rerun
+            shutil.rmtree(rundir)
+        os.makedirs(rundir)
+        wait_healthy(a)
+        fresh_work(os.path.join(a.set, "tasks", tid, "fixture"))
+        t0 = time.time()
+        if harness == "codex":
+            r = run_codex(a, key, MODELS[mshort], mode == "on", prompt, env, meta["timeout_s"], rundir)
+        else:
+            r = run_loop(a, key, MODELS[mshort], mode == "on", prompt, env, t0 + meta["timeout_s"])
+        secs = round(time.time() - t0, 1)
+        sweep()                   # Codex's --die-with-parent covers the usual exit, this the rest
+        if not healthy(a):  # the server died under this run: not the model's fail
+            r["status"] = "infra"
+        answer = os.path.join(rundir, "answer.txt")
+        with open(answer, "w") as f:
+            f.write(r["final"] or "")
+        g = grade(a, tid, answer, WORK)
+        shutil.copytree(WORK, os.path.join(rundir, "ws"), symlinks=True)
+        with open(os.path.join(rundir, "run.json"), "w") as f:
+            json.dump(dict(r, grade=g), f, indent=1)
+        row = {"task": tid, "arm": arm, "rep": rep, "pass": g["pass"], "status": r["status"],
+               "calls": len(r["calls"]), "secs": secs, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        with open(results, "a") as f:
+            f.write(json.dumps(row) + "\n")
+        print(f"rep{rep} {tid} {arm:15s} {'PASS' if g['pass'] else 'FAIL'} {r['status']:9s} "
+              f"calls={len(r['calls'])} {secs}s", flush=True)
     clean()
 
 
@@ -464,8 +487,27 @@ def mcnemar(b, c):
     return 1.0 if n == 0 else min(1.0, 2 * sum(math.comb(n, k) for k in range(min(b, c) + 1)) / 2 ** n)
 
 
+def signflip(d, seed, flips=100_000):
+    """Monte Carlo two-sided sign-flip p-value on paired differences."""
+    nz = [x for x in d if x]
+    if not nz:
+        return 1.0
+    obs, rng = abs(sum(nz)), random.Random(seed)
+    hits = sum(abs(sum(x if rng.random() < 0.5 else -x for x in nz)) >= obs for _ in range(flips))
+    return (hits + 1) / (flips + 1)
+
+
 def cmd_summary(a):
     rows = [json.loads(l) for l in open(os.path.join(a.out, "results.jsonl"))]
+    amend = os.path.join(a.out, "amend.jsonl")  # pre-registered regrades, applied after grading
+    if os.path.exists(amend):
+        fix = {(r["task"], r["arm"], r.get("rep", 1)): r["pass"] for r in map(json.loads, open(amend))}
+        n = 0
+        for r in rows:
+            k = (r["task"], r["arm"], r.get("rep", 1))
+            if k in fix and r["pass"] != fix[k]:
+                r["pass"], n = fix[k], n + 1
+        print(f"amended: {len(fix)} regrade(s) on file, {n} changed a verdict")
     void = set()
     for tag in ("before", "after"):
         p = os.path.join(a.out, f"selftest-{tag}.jsonl")
@@ -476,23 +518,44 @@ def cmd_summary(a):
     by = {}
     for r in rows:
         if r["task"] not in void and r["status"] != "infra":
-            by.setdefault(r["arm"], {})[r["task"]] = r["pass"]
+            by.setdefault(r["arm"], {}).setdefault(r["task"], []).append(r["pass"])
+    # fewer valid replicates than asked for: void for the comparison, not half-counted
+    short = sorted({t for v in by.values() for t, ps in v.items() if len(ps) < a.reps})
+    for t in short:
+        void.add(t)
+        for v in by.values():
+            v.pop(t, None)
+    if short:
+        print(f"short of {a.reps} replicates: {' '.join(short)}")
     print(f"void: {' '.join(sorted(void)) or 'none'}")
+    maj = {arm: {t: sum(ps) * 2 > len(ps) for t, ps in v.items()} for arm, v in by.items()}
     for arm in sorted(by):
-        v = by[arm]
-        print(f"{arm:15s} {sum(v.values()):2d}/{len(v)} pass")
-    pairs = []
-    for mode in ("off", "on"):
-        for m in MODELS:
-            pairs.append((f"codex-{m}-{mode}", f"loop-{m}-{mode}"))
-        for h in HARNESSES:
-            pairs.append((f"{h}-g6u-{mode}", f"{h}-base-{mode}"))
+        v, m = by[arm], maj[arm]
+        runs = [p for ps in v.values() for p in ps]
+        split = sum(0 < sum(ps) < len(ps) for ps in v.values())
+        print(f"{arm:15s} {sum(m.values()):2d}/{len(m)} pass"
+              + (f" by majority, {sum(runs)}/{len(runs)} runs, {split} task(s) split between replicates"
+                 if a.reps > 1 else ""))
+    if a.arms:
+        picked = arms("", a.arms)
+        pairs = [(x, y) for i, x in enumerate(picked) for y in picked[i + 1:]]
+    else:
+        pairs = []
+        for mode in ("off", "on"):
+            for m in MODELS:
+                pairs.append((f"codex-{m}-{mode}", f"loop-{m}-{mode}"))
+            for h in HARNESSES:
+                pairs.append((f"{h}-g6u-{mode}", f"{h}-base-{mode}"))
     for x, y in pairs:
-        if x in by and y in by:
-            common = sorted(set(by[x]) & set(by[y]))
-            b = sum(by[x][t] and not by[y][t] for t in common)
-            c = sum(by[y][t] and not by[x][t] for t in common)
+        if x in maj and y in maj:
+            common = sorted(set(maj[x]) & set(maj[y]))
+            b = sum(maj[x][t] and not maj[y][t] for t in common)
+            c = sum(maj[y][t] and not maj[x][t] for t in common)
             print(f"{x} vs {y}: {b} vs {c} discordant of {len(common)}, exact McNemar p={mcnemar(b, c):.3f}")
+            if a.reps > 1:  # pre-registered secondary: the counts behind the majorities
+                d = [sum(by[x][t]) - sum(by[y][t]) for t in common]
+                print(f"{x} vs {y}: pass-count difference {sum(d):+d} of {a.reps * len(common)}, "
+                      f"sign-flip p={signflip(d, a.seed):.3f}")
 
 
 def cmd_preflight(a):
@@ -509,12 +572,21 @@ def main():
     ap.add_argument("--base", default="http://localhost:8300")
     ap.add_argument("--prom", default="http://lab-desktop:9090")
     ap.add_argument("--modes", default="off,on")
+    ap.add_argument("--arms", default="", help="run only these arms, comma-separated, instead of --modes")
+    ap.add_argument("--reps", type=int, default=1, help="passes over the set; a task's verdict is the majority")
+    ap.add_argument("--dry-run", dest="dry", action="store_true", help="print run order and stop")
     ap.add_argument("--seed", type=int, default=20261009)
     ap.add_argument("--tag", default="before")
     ap.add_argument("--codex", default=shutil.which("codex") or os.path.expanduser("~/.local/bin/codex"))
     ap.add_argument("--hide", default="~/sealed:~/.ssh", help="colon-separated; the set and --out are added")
     ap.add_argument("--agent-user", default=AGENT_USER, help="the user every sandboxed shell runs as")
     a = ap.parse_args()
+    if a.reps < 1:
+        ap.error("--reps must be at least 1")
+    for arm in arms("", a.arms):
+        h, m, mode = (arm.split("-") + ["", ""])[:3]
+        if h not in HARNESSES or m not in MODELS or mode not in ("off", "on"):
+            ap.error(f"--arms: {arm!r} is not harness-model-mode")
     if not a.out:
         if a.cmd != "preflight":
             ap.error("--out is required")
