@@ -5,11 +5,13 @@
 # the desktop is off: it lists this card first and the desktop's as the
 # fallback, the mirror image of the desktop's agent routes. Same model names,
 # same key, so a client moves between nodes by changing only the host.
+#
+# "agent" is the base model here too, for the reason litellm-config.yaml gives.
 
 model_list:
   - model_name: agent
     litellm_params:
-      model: hosted_vllm/lightning-g6u
+      model: hosted_vllm/lightning
       api_base: http://127.0.0.1:8300/v1
       api_key: os.environ/LITELLM_MASTER_KEY
     model_info:
@@ -26,7 +28,7 @@ model_list:
   # Fallback targets only.
   - model_name: agent-desktop
     litellm_params:
-      model: hosted_vllm/lightning-g6u
+      model: hosted_vllm/lightning
       api_base: http://lab-desktop:8300/v1
       api_key: os.environ/LITELLM_MASTER_KEY
     model_info:

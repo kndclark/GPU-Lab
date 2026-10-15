@@ -58,14 +58,14 @@ model_list:
       arch: sm_86+sm_120
 
   # ---- the agent model: Lightning + G6u on one card, either node (lab up agent) ----
-  # "agent" is the adapter, "agent-base" the same engine without it. Each
+  # "agent" is the base model, "agent-base" the same thing by name. Each
   # node's LiteLLM lists its own card first and the peer's as the fallback
   # (serving/litellm-laptop.yaml is the mirror image), so the name answers
   # while either node serves it. Unlike everything above, this vLLM checks a
   # key: its port is open on every interface (bin/lab agent_up says why).
   - model_name: agent
     litellm_params:
-      model: hosted_vllm/lightning-g6u
+      model: hosted_vllm/lightning
       api_base: http://127.0.0.1:8300/v1
       api_key: os.environ/LITELLM_MASTER_KEY
     model_info:
@@ -82,7 +82,7 @@ model_list:
   # Fallback targets only.
   - model_name: agent-laptop
     litellm_params:
-      model: hosted_vllm/lightning-g6u
+      model: hosted_vllm/lightning
       api_base: http://lab-laptop:8300/v1
       api_key: os.environ/LITELLM_MASTER_KEY
     model_info:
