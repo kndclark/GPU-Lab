@@ -251,6 +251,53 @@ mirror first (`lab install` copies the key from the desktop; `lab mirror sync`
 the weights). Either node's `agent` falls back to the peer, so a client that
 names `agent` keeps answering across the switch with no reconfiguration.
 
+### Trading system RAM for context
+
+The card sets how much context the agent model holds at once. On the desktop
+today that is the 2.23 GiB of KV cache left after the weights, graphs and
+adapter slots: 609,484 tokens, or 4.65 requests at the 131,072-token window.
+Two vLLM flags move part of that into system RAM. Neither is on by default, and
+`AGENT_EXTRA_FLAGS` is the hook for trying either:
+
+    AGENT_EXTRA_FLAGS='--kv-offloading-size 8 --kv-offloading-backend native --max-num-batched-tokens 4096' bin/lab up agent
+
+Keep that on one line. A backslash inside the single quotes is a literal
+backslash, not a continuation.
+
+**Evicted KV blocks kept in RAM** (`--kv-offloading-size`, in GiB) costs no
+VRAM and adds no running room. What it buys is that prefix cache the card would
+have discarded gets read back instead of recomputed, which is the shape of a
+returning agent conversation. It is the larger win of the two: four agents at
+127k tokens each finished in 195 s against 519 s with no offload, and eight
+finished in 374 s against 2,461 s and 80 preemptions. Pin the prefill chunk to
+4,096 alongside it. 6,144 was slower, and at 8,192 host KV on its own
+deadlocked vLLM's scheduler -- a hang, not a slowdown.
+
+**Routed experts moved to RAM** (`--cpu-offload-gb 4 --cpu-offload-params
+experts`) does buy running room, and charges decode speed for it. It moves
+3.95 GiB of experts off the card, roughly tripling KV (1.69 to 5.63 GiB on the
+server it was measured on) and taking the longest single context from 555k
+tokens to 1.93M. Lightning's full 1,048,576-token window does not start at all
+without it -- vLLM refuses and names 551,232 tokens as the most it could take
+-- and does start with it. The price is immediate: peak decode falls from
+355-396 to 116 tok/s. That trade is for a few agents whose contexts outgrow the
+card, not for short turns.
+
+Size the host side to the node. The 16 GiB setting the measurements favour
+wants about 21 GB of RAM: the laptop has it (61 GiB, ~54 free), the desktop
+does not (30 GiB, ~23 free with the front door and monitoring up), which is why
+8 is the number above. And resist raising `AGENT_MAXLEN` to spend the new room
+on one node alone -- both nodes publish the same window on purpose, because
+LiteLLM falls back to the peer mid-conversation and a shorter peer would reject
+what the local card just accepted.
+
+These numbers come from synthetic agent loads on the laptop, on the same image
+this repo pins. None of it has been exercised through a coding harness or the
+sealed A/B, so treat the flags as a measured offer rather than a setting this
+lab runs on. moe-qlora's `docs/laptop-memory-levers.md` has the full table, the
+arms that lost, and a plugin that beats host KV on time to first token while
+losing to it on wall time.
+
 ### Both cards at once
 
     bin/lab pool up                # run it from the laptop
