@@ -144,7 +144,7 @@ Phase 2's endpoint had to be configured in Phase 1's files.
     bin/check.py      pre-push validation -- a config must be able to serve before it deploys
     arch/             one image recipe, two architecture targets, and the runtime arch proof
     nodes/            per-node llama-swap config + systemd unit (desktop sm_86, laptop sm_120)
-    serving/          LiteLLM (the single front door) + the vLLM/Ray pool image
+    serving/          LiteLLM for both front doors + the vLLM/Ray pool image
     monitoring/       Prometheus, Grafana, and the compose stack behind them
     bench/            the benchmark and its recorded baselines, per-node and pooled
     kernels/          the cross-arch kernel differential harness and its C4 repros
@@ -152,7 +152,8 @@ Phase 2's endpoint had to be configured in Phase 1's files.
     training/         the QLoRA pipeline (runs on the desktop, sm_86)
     host/             host configuration that is not reproducible from code alone
     docs/             what each phase delivered, the upstream candidate ledger, and
-                      forward notes (openshell.md: agent sandboxing for a chat harness)
+                      forward notes (client-setup.md: Codex and Cline against the
+                      lab; openshell.md: agent sandboxing for a chat harness)
 
 ## Using it
 
@@ -160,14 +161,15 @@ Everything is driven by `bin/lab`. The same script runs on both nodes and does t
 right thing for whichever one it is on:
 
     lab up      [--warm]     start everything (optionally preload this node's model)
+    lab up      agent        serve the agent model on THIS card instead (exclusive)
     lab down    [--boot-off] stop everything (optionally also disable autostart)
                 [--gpu-only] stop only what holds the GPU; leave the front door up
     lab pool    up|down      one model across BOTH cards (run it from the laptop)
     lab status               what is running, and is the GPU actually free
     lab reload  [svc]        apply edited config files (they are read-only mounts)
     lab check                validate configs before a push deploys them
-    lab install              (re)write this node's systemd unit from the repo
-    lab logs    <svc>        follow logs (llama-swap|litellm|prometheus|grafana|model|pool|mirror)
+    lab install              (re)write this node's systemd units and link names
+    lab logs    <svc>        follow logs (llama-swap|litellm|prometheus|grafana|model|agent|pool|mirror)
     lab mirror  status       laptop: is the local weight copy current (read-only)
                 sync [--wifi] [--force] [repo...]   copy + hash-check from the desktop
                 verify [repo...]  re-hash every blob;  prune [--apply]  report stale files
@@ -187,9 +189,76 @@ demand and swapped out again; the two nodes' catalogues are
 [nodes/desktop/llama-swap.yaml](nodes/desktop/llama-swap.yaml) and
 [nodes/laptop/llama-swap.yaml](nodes/laptop/llama-swap.yaml).
 
+The laptop runs a second LiteLLM of its own, carrying the agent model and
+nothing else, so that a coding agent there keeps working when the desktop is
+off. It is bound to `127.0.0.1`: from the laptop it is
+`http://localhost:4000/v1`, and from anywhere else it is not reachable at
+all — ask the desktop's front door for `agent-laptop` instead.
+
+To point a coding agent at any of this, see
+[docs/client-setup.md](docs/client-setup.md). To serve a model in the first
+place, see [Hosting a model](#hosting-a-model) below.
+
 The front door is co-located with the training card, which is why
 `lab down --gpu-only` exists: it frees the GPU for a training or measurement run
 without taking the endpoint down for everything else. LiteLLM itself needs no GPU.
+
+## Hosting a model
+
+Three things can hold a card, and only one of them can hold it at a time:
+llama-swap's on-demand catalogue, the agent model, and a pooled run across both
+cards. `lab down --gpu-only` is the way out of any of them, and leaves the front
+door up.
+
+Both cards are about 24 GiB, so neither node is the "big" one. The difference is
+that the laptop drives a display -- it starts with 21.73 of 23.4 GiB free
+against the desktop's 23.11 of 23.56, and its figure moves with whatever is on
+screen -- and that the desktop also carries the front door and the monitoring
+stack. Serve from the desktop by default; serve from the laptop when the desktop
+is off or busy training.
+
+### The swappable catalogue, on either node
+
+    bin/lab up                     # llama-swap + this node's front door
+    bin/lab up --warm              # and preload this node's own model
+
+This is the default state. Models in the node's `llama-swap.yaml` load when a
+client first names one and are swapped out again afterwards, so one card covers
+a whole catalogue. On the desktop this also brings up Prometheus and Grafana.
+
+### The agent model, on either node
+
+    bin/lab up agent
+
+Exclusive, because Lightning takes the whole card: it stops llama-swap. It
+preflights before it stops anything -- the lab key, the image, the weights at
+their pinned revision, the adapter -- and if the model will not fit after all,
+it puts llama-swap back as it found it and exits non-zero. Allow two to four
+minutes on a cold start: weights, then CUDA graph capture, which is not optional
+here because eager decodes 7-8x slower.
+
+It ends by printing where it landed:
+
+    agent up (desktop). model "agent" at http://localhost:4000/v1 (lab key)
+    direct: http://localhost:8300/v1 as lightning-g6u or lightning (same key)
+    llama-swap is stopped here; 'lab down --gpu-only' then 'lab up' restores it.
+
+`lab logs agent` follows the engine. A crashed engine deliberately stays down
+and keeps its log until the next `lab up agent` replaces it.
+
+On the laptop the same command needs the lab key file and a current weight
+mirror first (`lab install` copies the key from the desktop; `lab mirror sync`
+the weights). Either node's `agent` falls back to the peer, so a client that
+names `agent` keeps answering across the switch with no reconfiguration.
+
+### Both cards at once
+
+    bin/lab pool up                # run it from the laptop
+
+One model across both GPUs, reachable as the model `pool` at the desktop's front
+door. It stops llama-swap on both nodes itself, but it will not stop the agent
+model for you: if either card is holding Lightning, run `lab down --gpu-only`
+there first. The section below has the parameters and the standing gotchas.
 
 ## Pooling both cards
 
