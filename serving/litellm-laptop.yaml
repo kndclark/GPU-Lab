@@ -6,7 +6,7 @@
 # fallback, the mirror image of the desktop's agent routes. Same model names,
 # same key, so a client moves between nodes by changing only the host.
 #
-# "agent" is the base model here too, for the reason litellm-config.yaml gives.
+# "agent" is the base model here too, as in litellm-config.yaml.
 
 model_list:
   - model_name: agent
